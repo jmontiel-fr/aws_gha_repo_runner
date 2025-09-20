@@ -1,0 +1,112 @@
+name: Configure Repository Runner
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Runner action'
+        required: true
+        default: 'configure'
+        type: choice
+        options:
+        - configure
+        - remove
+        - status
+
+jobs:
+  manage-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get EC2 instance status
+        id: ec2-status
+        run: |
+          STATUS=$(aws ec2 describe-instances \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "EC2 instance status: $STATUS"
+
+      - name: Start EC2 if needed
+        if: steps.ec2-status.outputs.status != 'running'
+        run: |
+          echo "Starting EC2 instance..."
+          aws ec2 start-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }}
+          aws ec2 wait instance-running --instance-ids ${{ secrets.EC2_INSTANCE_ID }}
+
+      - name: Configure runner
+        if: github.event.inputs.action == 'configure'
+        run: |
+          # Generate registration token
+          TOKEN=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token" | \
+            jq -r '.token')
+          
+          # Get instance IP
+          INSTANCE_IP=$(aws ec2 describe-instances \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          
+          echo "Configuring runner on $INSTANCE_IP for repository ${{ github.repository }}"
+          
+          # Configure runner via SSH
+          ssh -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP << EOF
+            cd ~/actions-runner
+            
+            # Stop existing service
+            sudo ./svc.sh stop || true
+            sudo ./svc.sh uninstall || true
+            
+            # Remove existing configuration
+            sudo -u ubuntu ./config.sh remove --token $TOKEN || true
+            
+            # Configure new runner
+            sudo -u ubuntu ./config.sh \
+              --url https://github.com/${{ github.repository }} \
+              --token $TOKEN \
+              --name ${{ secrets.RUNNER_NAME }} \
+              --labels gha_aws_runner \
+              --work _work \
+              --unattended \
+              --replace
+            
+            # Install and start service
+            sudo ./svc.sh install ubuntu
+            sudo ./svc.sh start
+            
+            echo "Runner configured successfully for ${{ github.repository }}"
+          EOF
+
+      - name: Remove runner
+        if: github.event.inputs.action == 'remove'
+        run: |
+          # Get runner ID and remove
+          RUNNER_ID=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners" | \
+            jq -r ".runners[] | select(.name==\"${{ secrets.RUNNER_NAME }}\") | .id")
+          
+          if [ "$RUNNER_ID" != "null" ] && [ -n "$RUNNER_ID" ]; then
+            curl -X DELETE \
+              -H "Authorization: token ${{ secrets.GH_PAT }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runners/$RUNNER_ID"
+            echo "Runner removed from repository"
+          fi
+
+      - name: Show runner status
+        if: github.event.inputs.action == 'status'
+        run: |
+          echo "=== Repository Runners ==="
+          curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners" | \
+            jq -r '.runners[] | "Name: \(.name), Status: \(.status), Labels: \([.labels[].name] | join(","))"'

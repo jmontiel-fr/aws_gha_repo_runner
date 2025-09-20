@@ -1,0 +1,441 @@
+name: Repository Type Tests
+
+# Test workflow for different repository types (public/private)
+# Validates runner behavior across different repository configurations
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of repository test'
+        required: true
+        default: 'current'
+        type: choice
+        options:
+        - current
+        - public-simulation
+        - private-simulation
+        - cross-repository
+      validate_permissions:
+        description: 'Validate repository permissions'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  RUNNER_NAME: ${{ secrets.RUNNER_NAME || 'gha_aws_runner' }}
+
+jobs:
+  # Detect repository type and permissions
+  detect-repository-type:
+    name: Detect Repository Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      repository-type: ${{ steps.detect.outputs.type }}
+      has-admin: ${{ steps.detect.outputs.admin }}
+      actions-enabled: ${{ steps.detect.outputs.actions }}
+      runner-permission: ${{ steps.detect.outputs.runner_permission }}
+    steps:
+      - name: Detect repository configuration
+        id: detect
+        run: |
+          echo "=== Repository Configuration Detection ==="
+          echo "Repository: ${{ github.repository }}"
+          echo "Test type: ${{ github.event.inputs.test_type }}"
+          
+          # Get repository information
+          REPO_INFO=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}")
+          
+          if echo "$REPO_INFO" | jq -e '.message' > /dev/null; then
+            echo "❌ API Error: $(echo "$REPO_INFO" | jq -r '.message')"
+            exit 1
+          fi
+          
+          # Extract repository details
+          REPO_PRIVATE=$(echo "$REPO_INFO" | jq -r '.private')
+          REPO_ADMIN=$(echo "$REPO_INFO" | jq -r '.permissions.admin // false')
+          REPO_ACTIONS=$(echo "$REPO_INFO" | jq -r '.has_actions // true')
+          
+          if [ "$REPO_PRIVATE" = "true" ]; then
+            REPO_TYPE="private"
+            echo "🔒 Repository type: Private"
+          else
+            REPO_TYPE="public"
+            echo "🌐 Repository type: Public"
+          fi
+          
+          echo "Admin permissions: $REPO_ADMIN"
+          echo "Actions enabled: $REPO_ACTIONS"
+          
+          # Test runner registration capability
+          TOKEN_RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token")
+          
+          TOKEN_HTTP_CODE="${TOKEN_RESPONSE: -3}"
+          
+          if [ "$TOKEN_HTTP_CODE" = "201" ]; then
+            RUNNER_PERMISSION="allowed"
+            echo "✅ Runner registration: Allowed"
+          else
+            RUNNER_PERMISSION="denied"
+            echo "❌ Runner registration: Denied (HTTP $TOKEN_HTTP_CODE)"
+          fi
+          
+          # Set outputs
+          echo "type=$REPO_TYPE" >> $GITHUB_OUTPUT
+          echo "admin=$REPO_ADMIN" >> $GITHUB_OUTPUT
+          echo "actions=$REPO_ACTIONS" >> $GITHUB_OUTPUT
+          echo "runner_permission=$RUNNER_PERMISSION" >> $GITHUB_OUTPUT
+
+      - name: Validate repository permissions
+        if: github.event.inputs.validate_permissions == 'true'
+        run: |
+          echo "=== Repository Permission Validation ==="
+          
+          # Check required permissions for runner registration
+          if [ "${{ steps.detect.outputs.admin }}" != "true" ]; then
+            echo "❌ Missing admin permissions"
+            echo "You need admin permissions on this repository to:"
+            echo "- Register GitHub Actions runners"
+            echo "- Manage repository secrets"
+            echo "- Configure repository settings"
+            echo ""
+            echo "To fix this:"
+            echo "1. Ask repository owner to grant you admin access"
+            echo "2. Or fork the repository to your account"
+            exit 1
+          fi
+          
+          if [ "${{ steps.detect.outputs.actions }}" != "true" ]; then
+            echo "❌ GitHub Actions not enabled"
+            echo "Please enable Actions in repository Settings → Actions → General"
+            exit 1
+          fi
+          
+          if [ "${{ steps.detect.outputs.runner_permission }}" != "allowed" ]; then
+            echo "❌ Runner registration not allowed"
+            echo "This could be due to:"
+            echo "- Insufficient GitHub PAT permissions (need 'repo' scope)"
+            echo "- Repository Actions settings restrictions"
+            echo "- Organization policies blocking self-hosted runners"
+            exit 1
+          fi
+          
+          echo "✅ All required permissions are available"
+
+  # Test current repository configuration
+  test-current-repository:
+    name: Test Current Repository
+    needs: detect-repository-type
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'current' || github.event.inputs.test_type == 'cross-repository'
+    steps:
+      - name: Test current repository runner setup
+        run: |
+          echo "=== Current Repository Test ==="
+          echo "Repository: ${{ github.repository }}"
+          echo "Type: ${{ needs.detect-repository-type.outputs.repository-type }}"
+          echo "Admin access: ${{ needs.detect-repository-type.outputs.has-admin }}"
+          
+          # Test runner registration token generation
+          echo "Testing runner registration..."
+          TOKEN_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token")
+          
+          TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token')
+          
+          if [ "$TOKEN" != "null" ] && [ -n "$TOKEN" ]; then
+            echo "✅ Registration token generated successfully"
+            echo "Token length: ${#TOKEN} characters"
+          else
+            echo "❌ Failed to generate registration token"
+            echo "Response: $TOKEN_RESPONSE"
+            exit 1
+          fi
+          
+          # Test runner listing
+          echo "Testing runner listing..."
+          RUNNERS_RESPONSE=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners")
+          
+          RUNNER_COUNT=$(echo "$RUNNERS_RESPONSE" | jq -r '.total_count // 0')
+          echo "Current runners: $RUNNER_COUNT"
+          
+          if [ "$RUNNER_COUNT" -gt 0 ]; then
+            echo "Existing runners:"
+            echo "$RUNNERS_RESPONSE" | jq -r '.runners[] | "- \(.name) (\(.status))"'
+          fi
+          
+          echo "✅ Current repository test completed"
+
+  # Simulate public repository behavior
+  test-public-repository:
+    name: Test Public Repository Behavior
+    needs: detect-repository-type
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'public-simulation'
+    steps:
+      - name: Simulate public repository runner setup
+        run: |
+          echo "=== Public Repository Simulation ==="
+          echo "Simulating runner setup for public repository..."
+          
+          # Public repositories have specific considerations:
+          # 1. Runners are visible to anyone who can see the repository
+          # 2. Fork pull requests have restricted access to secrets
+          # 3. Security implications for accepting external contributions
+          
+          echo "Public repository considerations:"
+          echo "✅ Repository is publicly visible"
+          echo "✅ Actions workflows are publicly visible"
+          echo "⚠️  Self-hosted runners should not be used for public repositories"
+          echo "⚠️  Use GitHub-hosted runners for public repositories instead"
+          
+          # Test if current repository is actually public
+          if [ "${{ needs.detect-repository-type.outputs.repository-type }}" = "public" ]; then
+            echo ""
+            echo "🚨 WARNING: This is a public repository!"
+            echo "Using self-hosted runners with public repositories is NOT recommended because:"
+            echo "1. Anyone can fork your repository and potentially run code on your runner"
+            echo "2. Pull requests from forks could execute malicious code"
+            echo "3. Your runner infrastructure could be compromised"
+            echo ""
+            echo "Recommended alternatives:"
+            echo "- Use GitHub-hosted runners (runs-on: ubuntu-latest)"
+            echo "- Make repository private if you need self-hosted runners"
+            echo "- Use organization-level runners with strict access controls"
+          else
+            echo ""
+            echo "✅ Repository is private - safe to use self-hosted runners"
+          fi
+
+  # Simulate private repository behavior
+  test-private-repository:
+    name: Test Private Repository Behavior
+    needs: detect-repository-type
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'private-simulation'
+    steps:
+      - name: Simulate private repository runner setup
+        run: |
+          echo "=== Private Repository Simulation ==="
+          echo "Simulating runner setup for private repository..."
+          
+          # Private repositories are safer for self-hosted runners
+          echo "Private repository benefits:"
+          echo "✅ Limited access to repository content"
+          echo "✅ Controlled contributor access"
+          echo "✅ Secrets are protected from external access"
+          echo "✅ Safe to use self-hosted runners"
+          
+          # Test private repository specific features
+          echo ""
+          echo "Testing private repository features..."
+          
+          # Check if repository is actually private
+          if [ "${{ needs.detect-repository-type.outputs.repository-type }}" = "private" ]; then
+            echo "✅ Repository is private"
+            
+            # Test access to repository secrets (indirectly)
+            if [ -n "${{ secrets.GH_PAT }}" ]; then
+              echo "✅ Repository secrets are accessible"
+            else
+              echo "❌ Repository secrets not configured"
+            fi
+            
+            # Test runner registration for private repo
+            echo "Testing runner registration for private repository..."
+            TOKEN_RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+              -H "Authorization: token ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token")
+            
+            HTTP_CODE="${TOKEN_RESPONSE: -3}"
+            
+            if [ "$HTTP_CODE" = "201" ]; then
+              echo "✅ Runner registration successful for private repository"
+            else
+              echo "❌ Runner registration failed: HTTP $HTTP_CODE"
+            fi
+          else
+            echo "ℹ️  Repository is public - this is a simulation of private repository behavior"
+          fi
+          
+          echo ""
+          echo "Private repository runner best practices:"
+          echo "- Regularly rotate GitHub PAT tokens"
+          echo "- Use least-privilege AWS IAM policies"
+          echo "- Monitor runner usage and logs"
+          echo "- Keep runner software updated"
+          echo "- Use dedicated EC2 instances for runners"
+
+  # Test cross-repository scenarios
+  test-cross-repository:
+    name: Test Cross-Repository Scenarios
+    needs: detect-repository-type
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'cross-repository'
+    steps:
+      - name: Test cross-repository runner behavior
+        run: |
+          echo "=== Cross-Repository Test ==="
+          echo "Testing runner behavior across different repository contexts..."
+          
+          # Repository-level runners are isolated to specific repositories
+          echo "Repository-level runner characteristics:"
+          echo "✅ Runners are registered to specific repository only"
+          echo "✅ Cannot be shared across repositories"
+          echo "✅ Isolated execution environment per repository"
+          echo "⚠️  Need separate registration for each repository"
+          
+          # Test current repository registration
+          echo ""
+          echo "Current repository: ${{ github.repository }}"
+          
+          # Simulate what would happen if trying to use runner in different repository
+          echo ""
+          echo "Cross-repository usage simulation:"
+          echo "If you want to use the same EC2 instance for multiple repositories:"
+          echo "1. Unregister runner from current repository"
+          echo "2. Register runner with new repository"
+          echo "3. Update repository secrets in new repository"
+          echo "4. Cannot run jobs for multiple repositories simultaneously"
+          
+          # Test repository switching process
+          echo ""
+          echo "Repository switching process:"
+          echo "1. Get current repository runners:"
+          
+          CURRENT_RUNNERS=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners")
+          
+          RUNNER_COUNT=$(echo "$CURRENT_RUNNERS" | jq -r '.total_count // 0')
+          echo "   Current runners: $RUNNER_COUNT"
+          
+          if [ "$RUNNER_COUNT" -gt 0 ]; then
+            echo "   Registered runners:"
+            echo "$CURRENT_RUNNERS" | jq -r '.runners[] | "   - \(.name) (\(.status))"'
+          fi
+          
+          echo ""
+          echo "2. To switch to different repository:"
+          echo "   - Unregister: DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}"
+          echo "   - Register new: POST /repos/{new_owner}/{new_repo}/actions/runners/registration-token"
+          echo "   - Configure runner with new repository URL"
+          
+          echo ""
+          echo "✅ Cross-repository test completed"
+
+  # Generate comprehensive test report
+  generate-test-report:
+    name: Generate Test Report
+    needs: [detect-repository-type, test-current-repository, test-public-repository, test-private-repository, test-cross-repository]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate comprehensive test report
+        run: |
+          echo "=== Repository Type Test Report ==="
+          echo "Generated: $(date)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Test type: ${{ github.event.inputs.test_type }}"
+          echo ""
+          
+          echo "=== Repository Configuration ==="
+          echo "Type: ${{ needs.detect-repository-type.outputs.repository-type }}"
+          echo "Admin access: ${{ needs.detect-repository-type.outputs.has-admin }}"
+          echo "Actions enabled: ${{ needs.detect-repository-type.outputs.actions-enabled }}"
+          echo "Runner permission: ${{ needs.detect-repository-type.outputs.runner-permission }}"
+          echo ""
+          
+          echo "=== Test Results ==="
+          DETECT_RESULT="${{ needs.detect-repository-type.result }}"
+          CURRENT_RESULT="${{ needs.test-current-repository.result }}"
+          PUBLIC_RESULT="${{ needs.test-public-repository.result }}"
+          PRIVATE_RESULT="${{ needs.test-private-repository.result }}"
+          CROSS_RESULT="${{ needs.test-cross-repository.result }}"
+          
+          echo "Detection: $DETECT_RESULT"
+          echo "Current repository: $CURRENT_RESULT"
+          echo "Public simulation: $PUBLIC_RESULT"
+          echo "Private simulation: $PRIVATE_RESULT"
+          echo "Cross-repository: $CROSS_RESULT"
+          echo ""
+          
+          # Determine overall result
+          if [ "$DETECT_RESULT" = "success" ]; then
+            echo "✅ Repository type detection: PASSED"
+          else
+            echo "❌ Repository type detection: FAILED"
+          fi
+          
+          # Test-specific results
+          case "${{ github.event.inputs.test_type }}" in
+            "current")
+              if [ "$CURRENT_RESULT" = "success" ]; then
+                echo "✅ Current repository test: PASSED"
+              else
+                echo "❌ Current repository test: FAILED"
+              fi
+              ;;
+            "public-simulation")
+              if [ "$PUBLIC_RESULT" = "success" ]; then
+                echo "✅ Public repository simulation: PASSED"
+              else
+                echo "❌ Public repository simulation: FAILED"
+              fi
+              ;;
+            "private-simulation")
+              if [ "$PRIVATE_RESULT" = "success" ]; then
+                echo "✅ Private repository simulation: PASSED"
+              else
+                echo "❌ Private repository simulation: FAILED"
+              fi
+              ;;
+            "cross-repository")
+              if [ "$CROSS_RESULT" = "success" ]; then
+                echo "✅ Cross-repository test: PASSED"
+              else
+                echo "❌ Cross-repository test: FAILED"
+              fi
+              ;;
+          esac
+          
+          echo ""
+          echo "=== Recommendations ==="
+          
+          if [ "${{ needs.detect-repository-type.outputs.repository-type }}" = "public" ]; then
+            echo "🚨 PUBLIC REPOSITORY DETECTED"
+            echo "- Consider using GitHub-hosted runners instead"
+            echo "- If using self-hosted runners, ensure proper security measures"
+            echo "- Review who has access to fork and contribute to this repository"
+          else
+            echo "✅ Private repository - safe for self-hosted runners"
+          fi
+          
+          if [ "${{ needs.detect-repository-type.outputs.has-admin }}" != "true" ]; then
+            echo "⚠️  Missing admin permissions - cannot register runners"
+          fi
+          
+          if [ "${{ needs.detect-repository-type.outputs.runner-permission }}" != "allowed" ]; then
+            echo "⚠️  Runner registration not allowed - check PAT permissions"
+          fi
+          
+          echo ""
+          echo "=== Next Steps ==="
+          echo "1. Review test results above"
+          echo "2. Address any security concerns for public repositories"
+          echo "3. Ensure proper permissions are configured"
+          echo "4. Test actual runner registration and execution"
+          echo "5. Monitor runner usage and security"

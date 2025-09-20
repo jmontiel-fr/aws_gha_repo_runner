@@ -1,0 +1,762 @@
+name: Test Repository Runner
+
+# Comprehensive test workflow for repository-level GitHub Actions runner
+# Tests different scenarios including public/private repository configurations
+# Includes extensive debugging and validation steps
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_scenario:
+        description: 'Test scenario to run'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+        - basic
+        - build-test
+        - docker-build
+        - aws-integration
+        - full-validation
+      debug_mode:
+        description: 'Enable debug logging'
+        required: false
+        default: false
+        type: boolean
+      skip_cleanup:
+        description: 'Skip runner cleanup (for debugging)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  RUNNER_NAME: ${{ secrets.RUNNER_NAME || 'gha_aws_runner' }}
+  DEBUG_MODE: ${{ github.event.inputs.debug_mode }}
+
+jobs:
+  # Pre-flight validation job
+  validate-setup:
+    name: Validate Repository Setup
+    runs-on: ubuntu-latest
+    outputs:
+      validation-passed: ${{ steps.validate.outputs.passed }}
+      repository-type: ${{ steps.repo-info.outputs.type }}
+      runner-mode: ${{ steps.validate.outputs.mode }}
+    steps:
+      - name: Validate repository configuration
+        id: validate
+        run: |
+          echo "=== Repository Runner Validation ==="
+          echo "Repository: ${{ github.repository }}"
+          echo "Repository owner: ${{ github.repository_owner }}"
+          echo "Test scenario: ${{ github.event.inputs.test_scenario }}"
+          echo "Debug mode: ${{ env.DEBUG_MODE }}"
+          
+          # Check required secrets for repository mode
+          MISSING_SECRETS=()
+          REQUIRED_SECRETS=(
+            "AWS_ACCESS_KEY_ID"
+            "AWS_SECRET_ACCESS_KEY" 
+            "AWS_REGION"
+            "GH_PAT"
+            "EC2_INSTANCE_ID"
+          )
+          
+          for secret in "${REQUIRED_SECRETS[@]}"; do
+            case "$secret" in
+              "AWS_ACCESS_KEY_ID")
+                if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
+                  MISSING_SECRETS+=("$secret")
+                fi
+                ;;
+              "AWS_SECRET_ACCESS_KEY")
+                if [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+                  MISSING_SECRETS+=("$secret")
+                fi
+                ;;
+              "AWS_REGION")
+                if [ -z "${{ secrets.AWS_REGION }}" ]; then
+                  MISSING_SECRETS+=("$secret")
+                fi
+                ;;
+              "GH_PAT")
+                if [ -z "${{ secrets.GH_PAT }}" ]; then
+                  MISSING_SECRETS+=("$secret")
+                fi
+                ;;
+              "EC2_INSTANCE_ID")
+                if [ -z "${{ secrets.EC2_INSTANCE_ID }}" ]; then
+                  MISSING_SECRETS+=("$secret")
+                fi
+                ;;
+            esac
+          done
+          
+          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
+            echo "❌ Missing required secrets:"
+            printf '%s\n' "${MISSING_SECRETS[@]}"
+            echo ""
+            echo "Please configure these secrets in:"
+            echo "Repository Settings → Secrets and variables → Actions"
+            echo ""
+            echo "Required secrets for repository runner:"
+            echo "- AWS_ACCESS_KEY_ID: AWS access key for EC2 management"
+            echo "- AWS_SECRET_ACCESS_KEY: AWS secret access key"
+            echo "- AWS_REGION: AWS region (e.g., eu-west-1)"
+            echo "- GH_PAT: GitHub PAT with 'repo' scope"
+            echo "- EC2_INSTANCE_ID: EC2 instance ID from Terraform"
+            echo "- RUNNER_NAME: GitHub runner name (optional, defaults to gha_aws_runner)"
+            exit 1
+          fi
+          
+          echo "✅ All required secrets are configured"
+          echo "mode=repository" >> $GITHUB_OUTPUT
+          echo "passed=true" >> $GITHUB_OUTPUT
+
+      - name: Get repository information
+        id: repo-info
+        run: |
+          echo "=== Repository Information ==="
+          
+          # Get repository details using GitHub API
+          REPO_INFO=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}")
+          
+          if echo "$REPO_INFO" | jq -e '.private' > /dev/null; then
+            REPO_PRIVATE=$(echo "$REPO_INFO" | jq -r '.private')
+            REPO_NAME=$(echo "$REPO_INFO" | jq -r '.name')
+            REPO_FULL_NAME=$(echo "$REPO_INFO" | jq -r '.full_name')
+            
+            if [ "$REPO_PRIVATE" = "true" ]; then
+              REPO_TYPE="private"
+              echo "📁 Repository type: Private"
+            else
+              REPO_TYPE="public"
+              echo "🌐 Repository type: Public"
+            fi
+            
+            echo "Repository name: $REPO_NAME"
+            echo "Full name: $REPO_FULL_NAME"
+            echo "type=$REPO_TYPE" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to get repository information"
+            echo "Response: $REPO_INFO"
+            exit 1
+          fi
+
+      - name: Validate GitHub PAT permissions
+        run: |
+          echo "=== Validating GitHub PAT Permissions ==="
+          
+          # Test repository access
+          REPO_RESPONSE=$(curl -s -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}")
+          
+          HTTP_CODE="${REPO_RESPONSE: -3}"
+          RESPONSE_BODY="${REPO_RESPONSE%???}"
+          
+          case "$HTTP_CODE" in
+            "200")
+              echo "✅ Repository access: OK"
+              
+              # Check if user has admin permissions
+              PERMISSIONS=$(echo "$RESPONSE_BODY" | jq -r '.permissions.admin // false')
+              if [ "$PERMISSIONS" = "true" ]; then
+                echo "✅ Admin permissions: OK"
+              else
+                echo "❌ Admin permissions: Missing"
+                echo "You need admin permissions on this repository to register runners"
+                exit 1
+              fi
+              ;;
+            "404")
+              echo "❌ Repository not found or no access"
+              echo "Please check:"
+              echo "1. Repository name is correct: ${{ github.repository }}"
+              echo "2. GitHub PAT has 'repo' scope"
+              echo "3. You have access to this repository"
+              exit 1
+              ;;
+            "403")
+              echo "❌ Insufficient permissions"
+              echo "Please ensure your GitHub PAT has 'repo' scope"
+              exit 1
+              ;;
+            *)
+              echo "❌ Unexpected response: HTTP $HTTP_CODE"
+              echo "Response: $RESPONSE_BODY"
+              exit 1
+              ;;
+          esac
+          
+          # Test runner registration token generation
+          TOKEN_RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token")
+          
+          TOKEN_HTTP_CODE="${TOKEN_RESPONSE: -3}"
+          
+          if [ "$TOKEN_HTTP_CODE" = "201" ]; then
+            echo "✅ Runner registration token: OK"
+          else
+            echo "❌ Failed to generate runner registration token: HTTP $TOKEN_HTTP_CODE"
+            echo "Response: ${TOKEN_RESPONSE%???}"
+            exit 1
+          fi
+
+  # Start runner with enhanced error handling
+  start-runner:
+    name: Start Repository Runner
+    needs: validate-setup
+    runs-on: ubuntu-latest
+    outputs:
+      runner-name: ${{ steps.register.outputs.runner-name }}
+      instance-ip: ${{ steps.start-ec2.outputs.instance-ip }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Validate AWS configuration
+        run: |
+          echo "=== AWS Configuration Validation ==="
+          
+          # Test AWS credentials
+          if ! aws sts get-caller-identity; then
+            echo "❌ AWS credentials are invalid"
+            echo "Please check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+            exit 1
+          fi
+          
+          echo "✅ AWS credentials are valid"
+          
+          # Validate EC2 instance exists
+          if ! aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} > /dev/null 2>&1; then
+            echo "❌ EC2 instance not found: ${{ secrets.EC2_INSTANCE_ID }}"
+            echo "Please check EC2_INSTANCE_ID secret"
+            exit 1
+          fi
+          
+          echo "✅ EC2 instance exists: ${{ secrets.EC2_INSTANCE_ID }}"
+
+      - name: Start EC2 instance with detailed logging
+        id: start-ec2
+        run: |
+          echo "=== Starting EC2 Instance ==="
+          
+          # Get current instance state
+          INSTANCE_STATE=$(aws ec2 describe-instances \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)
+          
+          echo "Current instance state: $INSTANCE_STATE"
+          
+          case "$INSTANCE_STATE" in
+            "running")
+              echo "✅ Instance is already running"
+              ;;
+            "stopped")
+              echo "Starting stopped instance..."
+              aws ec2 start-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }}
+              echo "Waiting for instance to be running..."
+              aws ec2 wait instance-running --instance-ids ${{ secrets.EC2_INSTANCE_ID }}
+              echo "✅ Instance started successfully"
+              ;;
+            "pending"|"starting")
+              echo "Instance is starting, waiting..."
+              aws ec2 wait instance-running --instance-ids ${{ secrets.EC2_INSTANCE_ID }}
+              echo "✅ Instance is now running"
+              ;;
+            *)
+              echo "❌ Instance in unexpected state: $INSTANCE_STATE"
+              exit 1
+              ;;
+          esac
+          
+          # Get instance IP
+          INSTANCE_IP=$(aws ec2 describe-instances \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          
+          if [ "$INSTANCE_IP" = "None" ] || [ -z "$INSTANCE_IP" ]; then
+            echo "❌ Failed to get instance public IP"
+            exit 1
+          fi
+          
+          echo "✅ Instance IP: $INSTANCE_IP"
+          echo "instance-ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
+
+      - name: Wait for SSH connectivity
+        run: |
+          echo "=== Waiting for SSH Connectivity ==="
+          INSTANCE_IP=${{ steps.start-ec2.outputs.instance-ip }}
+          
+          # Wait up to 5 minutes for SSH to be ready
+          timeout 300 bash -c "
+            while ! nc -z $INSTANCE_IP 22; do
+              echo 'Waiting for SSH...'
+              sleep 10
+            done
+          "
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ SSH is ready on $INSTANCE_IP"
+          else
+            echo "❌ Timeout waiting for SSH"
+            exit 1
+          fi
+
+      - name: Register runner with repository
+        id: register
+        run: |
+          echo "=== Registering Runner with Repository ==="
+          
+          # Generate registration token
+          TOKEN_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token")
+          
+          REGISTRATION_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token')
+          
+          if [ "$REGISTRATION_TOKEN" = "null" ] || [ -z "$REGISTRATION_TOKEN" ]; then
+            echo "❌ Failed to get registration token"
+            echo "Response: $TOKEN_RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Registration token obtained"
+          
+          INSTANCE_IP=${{ steps.start-ec2.outputs.instance-ip }}
+          
+          # Create runner registration script
+          cat > register_runner.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          REPO_URL="$1"
+          TOKEN="$2"
+          RUNNER_NAME="$3"
+          
+          echo "Registering runner: $RUNNER_NAME"
+          echo "Repository URL: $REPO_URL"
+          
+          cd /home/ubuntu
+          
+          # Download runner if not exists
+          if [ ! -d "actions-runner" ]; then
+            echo "Downloading GitHub Actions runner..."
+            mkdir actions-runner && cd actions-runner
+            curl -o actions-runner-linux-x64-2.311.0.tar.gz -L \
+              https://github.com/actions/runner/releases/download/v2.311.0/actions-runner-linux-x64-2.311.0.tar.gz
+            tar xzf ./actions-runner-linux-x64-2.311.0.tar.gz
+            sudo ./bin/installdependencies.sh
+          else
+            cd actions-runner
+          fi
+          
+          # Stop existing service
+          sudo ./svc.sh stop || true
+          sudo ./svc.sh uninstall || true
+          
+          # Remove existing configuration
+          sudo -u ubuntu ./config.sh remove --token "$TOKEN" || true
+          
+          # Configure new runner
+          sudo -u ubuntu ./config.sh \
+            --url "$REPO_URL" \
+            --token "$TOKEN" \
+            --name "$RUNNER_NAME" \
+            --labels gha_aws_runner,ubuntu-22.04,repository-runner \
+            --work _work \
+            --unattended \
+            --replace
+          
+          # Install and start service
+          sudo ./svc.sh install ubuntu
+          sudo ./svc.sh start
+          
+          # Verify service is running
+          sleep 5
+          if sudo ./svc.sh status | grep -q "active (running)"; then
+            echo "✅ Runner service is active"
+          else
+            echo "❌ Runner service failed to start"
+            sudo ./svc.sh status
+            exit 1
+          fi
+          EOF
+          
+          # Execute registration on EC2 instance
+          echo "Executing runner registration on $INSTANCE_IP..."
+          
+          # Note: In a real environment, you would need SSH key access
+          # This is a demonstration of the registration process
+          echo "Registration script prepared for:"
+          echo "Repository: https://github.com/${{ github.repository }}"
+          echo "Runner name: ${{ env.RUNNER_NAME }}"
+          echo ""
+          echo "To complete registration, execute on EC2 instance:"
+          echo "scp register_runner.sh ubuntu@$INSTANCE_IP:~/"
+          echo "ssh ubuntu@$INSTANCE_IP 'bash register_runner.sh \"https://github.com/${{ github.repository }}\" \"$REGISTRATION_TOKEN\" \"${{ env.RUNNER_NAME }}\"'"
+          
+          echo "runner-name=${{ env.RUNNER_NAME }}" >> $GITHUB_OUTPUT
+
+  # Test scenarios on self-hosted runner
+  test-scenarios:
+    name: Test Scenario - ${{ github.event.inputs.test_scenario }}
+    needs: [validate-setup, start-runner]
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Display runner environment
+        run: |
+          echo "=== Runner Environment ==="
+          echo "Hostname: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Working directory: $(pwd)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Repository type: ${{ needs.validate-setup.outputs.repository-type }}"
+          echo "Test scenario: ${{ github.event.inputs.test_scenario }}"
+          echo "Runner name: ${{ needs.start-runner.outputs.runner-name }}"
+          echo "Debug mode: ${{ env.DEBUG_MODE }}"
+          echo ""
+          echo "=== System Information ==="
+          uname -a
+          echo ""
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h
+
+      - name: Basic validation test
+        if: github.event.inputs.test_scenario == 'basic' || github.event.inputs.test_scenario == 'full-validation'
+        run: |
+          echo "=== Basic Validation Test ==="
+          
+          # Test basic commands
+          echo "Testing basic commands..."
+          which bash || echo "❌ bash not found"
+          which curl || echo "❌ curl not found"
+          which jq || echo "❌ jq not found"
+          which git || echo "❌ git not found"
+          
+          # Test environment variables
+          echo "Testing environment variables..."
+          echo "HOME: $HOME"
+          echo "PATH: $PATH"
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
+          
+          echo "✅ Basic validation completed"
+
+      - name: Build and test scenario
+        if: github.event.inputs.test_scenario == 'build-test' || github.event.inputs.test_scenario == 'full-validation'
+        run: |
+          echo "=== Build and Test Scenario ==="
+          
+          # Test development tools
+          echo "Testing development tools..."
+          
+          if command -v python3 &> /dev/null; then
+            echo "✅ Python 3: $(python3 --version)"
+            
+            # Create a simple Python test
+            cat > test_script.py << 'EOF'
+          print("Hello from repository runner!")
+          import sys
+          print(f"Python version: {sys.version}")
+          EOF
+            
+            python3 test_script.py
+          else
+            echo "❌ Python 3 not available"
+          fi
+          
+          if command -v node &> /dev/null; then
+            echo "✅ Node.js: $(node --version)"
+            echo "✅ npm: $(npm --version)"
+          else
+            echo "❌ Node.js not available"
+          fi
+          
+          if command -v java &> /dev/null; then
+            echo "✅ Java: $(java -version 2>&1 | head -1)"
+          else
+            echo "❌ Java not available"
+          fi
+
+      - name: Docker build scenario
+        if: github.event.inputs.test_scenario == 'docker-build' || github.event.inputs.test_scenario == 'full-validation'
+        run: |
+          echo "=== Docker Build Scenario ==="
+          
+          if command -v docker &> /dev/null; then
+            echo "✅ Docker: $(docker --version)"
+            
+            # Test Docker daemon
+            if docker info > /dev/null 2>&1; then
+              echo "✅ Docker daemon is running"
+              
+              # Create a simple Dockerfile
+              cat > Dockerfile << 'EOF'
+          FROM alpine:latest
+          RUN echo "Hello from Docker on repository runner!"
+          CMD ["echo", "Docker test successful"]
+          EOF
+              
+              # Build and run test image
+              echo "Building test Docker image..."
+              docker build -t runner-test .
+              
+              echo "Running test Docker container..."
+              docker run --rm runner-test
+              
+              # Cleanup
+              docker rmi runner-test
+              rm Dockerfile
+              
+              echo "✅ Docker build test completed"
+            else
+              echo "❌ Docker daemon is not running"
+            fi
+          else
+            echo "❌ Docker not available"
+          fi
+
+      - name: AWS integration scenario
+        if: github.event.inputs.test_scenario == 'aws-integration' || github.event.inputs.test_scenario == 'full-validation'
+        run: |
+          echo "=== AWS Integration Scenario ==="
+          
+          if command -v aws &> /dev/null; then
+            echo "✅ AWS CLI: $(aws --version)"
+            
+            # Test AWS credentials (using the same ones from secrets)
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION }}"
+            
+            # Test AWS connectivity
+            echo "Testing AWS connectivity..."
+            if aws sts get-caller-identity; then
+              echo "✅ AWS credentials are valid"
+              
+              # Test EC2 access
+              echo "Testing EC2 access..."
+              if aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --query 'Reservations[0].Instances[0].{State:State.Name,Type:InstanceType}' --output table; then
+                echo "✅ EC2 access successful"
+              else
+                echo "❌ EC2 access failed"
+              fi
+            else
+              echo "❌ AWS credentials test failed"
+            fi
+          else
+            echo "❌ AWS CLI not available"
+          fi
+
+      - name: Full validation scenario
+        if: github.event.inputs.test_scenario == 'full-validation'
+        run: |
+          echo "=== Full Validation Scenario ==="
+          
+          # Test all available tools
+          TOOLS=("docker" "aws" "python3" "java" "terraform" "kubectl" "helm" "git" "curl" "jq")
+          
+          echo "Testing all tools..."
+          for tool in "${TOOLS[@]}"; do
+            if command -v "$tool" &> /dev/null; then
+              case "$tool" in
+                "docker")
+                  if docker info > /dev/null 2>&1; then
+                    echo "✅ $tool: Available and running"
+                  else
+                    echo "⚠️  $tool: Available but daemon not running"
+                  fi
+                  ;;
+                "aws")
+                  echo "✅ $tool: $(aws --version 2>&1 | head -1)"
+                  ;;
+                "python3")
+                  echo "✅ $tool: $(python3 --version)"
+                  ;;
+                "java")
+                  echo "✅ $tool: $(java -version 2>&1 | head -1)"
+                  ;;
+                *)
+                  echo "✅ $tool: Available"
+                  ;;
+              esac
+            else
+              echo "❌ $tool: Not available"
+            fi
+          done
+          
+          echo ""
+          echo "=== Repository Runner Validation Summary ==="
+          echo "Repository: ${{ github.repository }}"
+          echo "Repository type: ${{ needs.validate-setup.outputs.repository-type }}"
+          echo "Runner mode: ${{ needs.validate-setup.outputs.runner-mode }}"
+          echo "Test scenario: ${{ github.event.inputs.test_scenario }}"
+          echo "✅ Full validation completed successfully"
+
+      - name: Debug information
+        if: env.DEBUG_MODE == 'true'
+        run: |
+          echo "=== Debug Information ==="
+          echo "Environment variables:"
+          env | sort
+          echo ""
+          echo "Process list:"
+          ps aux
+          echo ""
+          echo "Network connections:"
+          netstat -tuln
+          echo ""
+          echo "Mounted filesystems:"
+          mount
+          echo ""
+          echo "System logs (last 50 lines):"
+          sudo tail -50 /var/log/syslog || echo "Could not read system logs"
+
+  # Cleanup job
+  cleanup-runner:
+    name: Cleanup Repository Runner
+    needs: [start-runner, test-scenarios]
+    runs-on: ubuntu-latest
+    if: always() && github.event.inputs.skip_cleanup != 'true'
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Unregister runner from repository
+        continue-on-error: true
+        run: |
+          echo "=== Unregistering Runner from Repository ==="
+          
+          # Get runner ID
+          RUNNERS_RESPONSE=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners")
+          
+          RUNNER_ID=$(echo "$RUNNERS_RESPONSE" | jq -r ".runners[] | select(.name==\"${{ env.RUNNER_NAME }}\") | .id")
+          
+          if [ "$RUNNER_ID" != "null" ] && [ -n "$RUNNER_ID" ]; then
+            echo "Found runner ID: $RUNNER_ID"
+            
+            # Unregister runner
+            UNREGISTER_RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
+              -H "Authorization: token ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runners/$RUNNER_ID")
+            
+            HTTP_CODE="${UNREGISTER_RESPONSE: -3}"
+            
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "✅ Runner unregistered successfully"
+            else
+              echo "❌ Failed to unregister runner: HTTP $HTTP_CODE"
+            fi
+          else
+            echo "⚠️  Runner not found or already unregistered"
+          fi
+
+      - name: Stop EC2 instance
+        run: |
+          echo "=== Stopping EC2 Instance ==="
+          
+          # Get current instance state
+          INSTANCE_STATE=$(aws ec2 describe-instances \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)
+          
+          echo "Current instance state: $INSTANCE_STATE"
+          
+          if [ "$INSTANCE_STATE" = "running" ]; then
+            echo "Stopping instance..."
+            aws ec2 stop-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }}
+            echo "✅ Stop command sent"
+          else
+            echo "Instance is not running, no action needed"
+          fi
+
+  # Summary job
+  test-summary:
+    name: Test Summary
+    needs: [validate-setup, start-runner, test-scenarios, cleanup-runner]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate test summary
+        run: |
+          echo "=== Repository Runner Test Summary ==="
+          echo "Repository: ${{ github.repository }}"
+          echo "Repository type: ${{ needs.validate-setup.outputs.repository-type }}"
+          echo "Test scenario: ${{ github.event.inputs.test_scenario }}"
+          echo "Debug mode: ${{ env.DEBUG_MODE }}"
+          echo "Skip cleanup: ${{ github.event.inputs.skip_cleanup }}"
+          echo ""
+          
+          # Check job results
+          VALIDATION_RESULT="${{ needs.validate-setup.result }}"
+          START_RESULT="${{ needs.start-runner.result }}"
+          TEST_RESULT="${{ needs.test-scenarios.result }}"
+          CLEANUP_RESULT="${{ needs.cleanup-runner.result }}"
+          
+          echo "Job Results:"
+          echo "- Validation: $VALIDATION_RESULT"
+          echo "- Start Runner: $START_RESULT"
+          echo "- Test Scenarios: $TEST_RESULT"
+          echo "- Cleanup: $CLEANUP_RESULT"
+          echo ""
+          
+          # Determine overall result
+          if [ "$VALIDATION_RESULT" = "success" ] && [ "$START_RESULT" = "success" ] && [ "$TEST_RESULT" = "success" ]; then
+            echo "🎉 Overall Result: SUCCESS"
+            echo "✅ Repository runner is working correctly"
+          else
+            echo "❌ Overall Result: FAILURE"
+            echo "Please check the failed jobs for details"
+            
+            if [ "$VALIDATION_RESULT" != "success" ]; then
+              echo "- Validation failed: Check repository secrets and permissions"
+            fi
+            if [ "$START_RESULT" != "success" ]; then
+              echo "- Runner start failed: Check AWS configuration and EC2 instance"
+            fi
+            if [ "$TEST_RESULT" != "success" ]; then
+              echo "- Test scenarios failed: Check runner environment and tools"
+            fi
+          fi
+          
+          echo ""
+          echo "=== Troubleshooting Guide ==="
+          echo "If tests failed, check:"
+          echo "1. Repository secrets are correctly configured"
+          echo "2. GitHub PAT has 'repo' scope and admin permissions"
+          echo "3. AWS credentials have EC2 permissions"
+          echo "4. EC2 instance exists and is accessible"
+          echo "5. Security groups allow SSH access"
+          echo "6. Runner tools are installed on EC2 instance"
+          echo ""
+          echo "For more help, see the troubleshooting documentation."

@@ -1,0 +1,75 @@
+# Example Terraform variables for GitHub Actions Repository Runner
+# Copy this file to terraform.tfvars and update the values for your setup
+
+# =============================================================================
+# REPOSITORY CONFIGURATION
+# =============================================================================
+# This configuration is designed for personal GitHub repositories.
+# The runner will be registered with a specific repository rather than an organization.
+
+# Tool Versions - Update these to match your project requirements
+docker_version     = "24.0.7"
+aws_cli_version    = "2.15.17"
+python_version     = "3.12"
+openjdk_version    = "17"
+terraform_version  = "1.6.6"
+kubectl_version    = "1.29.1"
+helm_version       = "3.14.0"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# VPC and subnet configuration for the repository runner infrastructure
+vpc_cidr           = "10.0.0.0/16"
+public_subnet_cidr = "10.0.1.0/24"
+
+# =============================================================================
+# SECURITY CONFIGURATION
+# =============================================================================
+# Personal IP for SSH access - IMPORTANT: Replace with your actual public IP
+# You can find your IP by visiting: https://whatismyipaddress.com/
+# Format: "YOUR_IP_HERE/32" (the /32 means only your specific IP)
+personal_ip = "YOUR_IP_HERE/32"
+
+# =============================================================================
+# INSTANCE CONFIGURATION
+# =============================================================================
+# EC2 instance configuration for the repository runner
+instance_type = "t3.micro"  # Free tier eligible, suitable for most repository workflows
+
+# AWS Key Pair name for SSH access to the EC2 instance
+# Create this key pair in AWS EC2 console before running terraform
+# Guide: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/create-key-pairs.html
+key_pair_name = "gha-runner-key"
+
+# =============================================================================
+# REPOSITORY RUNNER SETUP NOTES
+# =============================================================================
+# After deploying this infrastructure:
+#
+# 1. Configure GitHub Repository Secrets:
+#    - AWS_ACCESS_KEY_ID: Your AWS access key
+#    - AWS_SECRET_ACCESS_KEY: Your AWS secret key  
+#    - AWS_REGION: The region where you deployed (default: eu-west-1)
+#    - GH_PAT: GitHub Personal Access Token with 'repo' scope
+#    - EC2_INSTANCE_ID: Output from this Terraform deployment
+#    - RUNNER_NAME: Name for your runner (e.g., "gha_aws_runner")
+#
+# 2. GitHub PAT Requirements:
+#    - Scope: 'repo' (NOT 'admin:org' - this is for repositories, not organizations)
+#    - Repository admin permissions required on target repository
+#
+# 3. Runner Registration:
+#    - Use the provided GitHub Actions workflows to register the runner
+#    - Runner will be registered with your specific repository
+#    - No organization-level permissions needed
+#
+# 4. Cost Optimization:
+#    - Instance starts/stops automatically with workflows
+#    - Uses t3.micro for cost efficiency
+#    - No persistent storage costs (runner re-registers on each start)
+#
+# 5. Security Features:
+#    - SSH access restricted to your personal IP only
+#    - GitHub Actions access from GitHub IP ranges only
+#    - Runner isolated to single repository
