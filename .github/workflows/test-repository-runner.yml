@@ -1,4 +1,4 @@
-name: Test Repository Runner
+name: test-repository-runner
 
 # Comprehensive test workflow for repository-level GitHub Actions runner
 # Tests different scenarios including public/private repository configurations

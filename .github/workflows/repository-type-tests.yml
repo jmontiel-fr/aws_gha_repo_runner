@@ -1,4 +1,4 @@
-name: Repository Type Tests
+name: repository-type-tests
 
 # Test workflow for different repository types (public/private)
 # Validates runner behavior across different repository configurations

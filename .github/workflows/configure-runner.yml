@@ -1,4 +1,4 @@
-name: Configure Repository Runner
+name: configure-runner
 on:
   workflow_dispatch:
     inputs:
