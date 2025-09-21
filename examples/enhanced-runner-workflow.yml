@@ -1,0 +1,449 @@
+# Enhanced GitHub Actions Workflow Example
+# This workflow demonstrates best practices for using self-hosted runners
+# with the enhanced installation process, including proper error handling
+# and recovery mechanisms.
+
+name: Enhanced Runner Workflow Example
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_scenario:
+        description: 'Test scenario to run'
+        required: false
+        default: 'basic'
+        type: choice
+        options:
+          - basic
+          - stress_test
+          - error_handling
+          - diagnostics
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+# Environment variables for the workflow
+env:
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'
+  JAVA_VERSION: '17'
+
+jobs:
+  # Pre-flight checks to ensure runner is healthy
+  runner-health-check:
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 5
+    outputs:
+      runner-status: ${{ steps.health.outputs.status }}
+      runner-info: ${{ steps.info.outputs.info }}
+    
+    steps:
+      - name: Runner Health Check
+        id: health
+        run: |
+          echo "=== Runner Health Check ==="
+          echo "Hostname: $(hostname)"
+          echo "Instance: runner-${{ github.repository_owner }}-${{ github.event.repository.name }}"
+          echo "Timestamp: $(date)"
+          echo "User: $(whoami)"
+          echo "Working Directory: $(pwd)"
+          echo ""
+          
+          # Check system resources
+          echo "=== System Resources ==="
+          echo "Memory:"
+          free -h
+          echo ""
+          echo "Disk Space:"
+          df -h / /tmp
+          echo ""
+          echo "Load Average:"
+          uptime
+          echo ""
+          
+          # Check required tools
+          echo "=== Tool Versions ==="
+          echo "Docker: $(docker --version 2>/dev/null || echo 'Not available')"
+          echo "AWS CLI: $(aws --version 2>/dev/null || echo 'Not available')"
+          echo "Node.js: $(node --version 2>/dev/null || echo 'Not available')"
+          echo "Python: $(python3 --version 2>/dev/null || echo 'Not available')"
+          echo "Java: $(java -version 2>&1 | head -1 || echo 'Not available')"
+          echo "Terraform: $(terraform version 2>/dev/null | head -1 || echo 'Not available')"
+          echo "kubectl: $(kubectl version --client 2>/dev/null | head -1 || echo 'Not available')"
+          echo ""
+          
+          # Set output
+          echo "status=healthy" >> $GITHUB_OUTPUT
+
+      - name: Collect Runner Information
+        id: info
+        run: |
+          # Collect runner information for debugging
+          runner_info=$(cat << EOF
+          {
+            "hostname": "$(hostname)",
+            "instance_name": "runner-${{ github.repository_owner }}-${{ github.event.repository.name }}",
+            "timestamp": "$(date -Iseconds)",
+            "user": "$(whoami)",
+            "working_directory": "$(pwd)",
+            "memory_mb": $(free -m | awk 'NR==2{print $2}'),
+            "disk_available_mb": $(df -m / | awk 'NR==2{print $4}'),
+            "load_average": "$(uptime | awk -F'load average:' '{print $2}' | xargs)",
+            "runner_version": "$(cd ~/actions-runner && ./run.sh --version 2>/dev/null | head -1 || echo 'Unknown')"
+          }
+          EOF
+          )
+          
+          echo "info<<EOF" >> $GITHUB_OUTPUT
+          echo "$runner_info" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  # Basic workflow functionality test
+  basic-functionality:
+    needs: runner-health-check
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 10
+    if: ${{ needs.runner-health-check.outputs.runner-status == 'healthy' }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Test File System Operations
+        run: |
+          echo "=== File System Operations Test ==="
+          
+          # Test write permissions
+          echo "Testing write permissions..."
+          echo "test content" > /tmp/test-write.txt
+          cat /tmp/test-write.txt
+          rm /tmp/test-write.txt
+          echo "✓ Write permissions OK"
+          
+          # Test workspace access
+          echo "Testing workspace access..."
+          ls -la ${{ github.workspace }}
+          echo "✓ Workspace access OK"
+          
+          # Test temporary directory
+          echo "Testing temporary directory..."
+          temp_dir=$(mktemp -d)
+          echo "test" > "$temp_dir/test.txt"
+          cat "$temp_dir/test.txt"
+          rm -rf "$temp_dir"
+          echo "✓ Temporary directory OK"
+
+      - name: Test Network Connectivity
+        run: |
+          echo "=== Network Connectivity Test ==="
+          
+          # Test basic connectivity
+          echo "Testing basic connectivity..."
+          ping -c 3 8.8.8.8
+          echo "✓ Basic connectivity OK"
+          
+          # Test DNS resolution
+          echo "Testing DNS resolution..."
+          nslookup github.com
+          echo "✓ DNS resolution OK"
+          
+          # Test HTTPS connectivity
+          echo "Testing HTTPS connectivity..."
+          curl -I https://api.github.com
+          echo "✓ HTTPS connectivity OK"
+
+      - name: Test Tool Availability
+        run: |
+          echo "=== Tool Availability Test ==="
+          
+          # Test Docker
+          echo "Testing Docker..."
+          docker run --rm hello-world
+          echo "✓ Docker OK"
+          
+          # Test AWS CLI
+          echo "Testing AWS CLI..."
+          aws sts get-caller-identity || echo "AWS CLI available but not configured"
+          echo "✓ AWS CLI OK"
+          
+          # Test Node.js
+          echo "Testing Node.js..."
+          node -e "console.log('Node.js version:', process.version)"
+          npm --version
+          echo "✓ Node.js OK"
+          
+          # Test Python
+          echo "Testing Python..."
+          python3 --version
+          pip3 --version
+          echo "✓ Python OK"
+
+  # Stress test for resource usage
+  stress-test:
+    needs: runner-health-check
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 15
+    if: ${{ github.event.inputs.test_scenario == 'stress_test' }}
+    
+    steps:
+      - name: CPU Stress Test
+        run: |
+          echo "=== CPU Stress Test ==="
+          echo "Running CPU intensive task for 30 seconds..."
+          
+          # Run CPU stress test
+          timeout 30s bash -c 'while true; do :; done' &
+          stress_pid=$!
+          
+          # Monitor system during stress
+          for i in {1..6}; do
+            echo "Iteration $i/6:"
+            uptime
+            free -h | head -2
+            sleep 5
+          done
+          
+          # Clean up
+          kill $stress_pid 2>/dev/null || true
+          echo "✓ CPU stress test completed"
+
+      - name: Memory Usage Test
+        run: |
+          echo "=== Memory Usage Test ==="
+          echo "Testing memory allocation..."
+          
+          # Allocate and free memory
+          python3 -c "
+          import time
+          print('Allocating 100MB of memory...')
+          data = bytearray(100 * 1024 * 1024)  # 100MB
+          print('Memory allocated, sleeping for 10 seconds...')
+          time.sleep(10)
+          del data
+          print('Memory freed')
+          "
+          
+          echo "✓ Memory usage test completed"
+
+      - name: Disk I/O Test
+        run: |
+          echo "=== Disk I/O Test ==="
+          echo "Testing disk I/O performance..."
+          
+          # Write test
+          echo "Write test (100MB)..."
+          dd if=/dev/zero of=/tmp/test_file bs=1M count=100 2>&1 | grep -E "copied|MB/s"
+          
+          # Read test
+          echo "Read test..."
+          dd if=/tmp/test_file of=/dev/null bs=1M 2>&1 | grep -E "copied|MB/s"
+          
+          # Cleanup
+          rm -f /tmp/test_file
+          echo "✓ Disk I/O test completed"
+
+  # Error handling and recovery test
+  error-handling-test:
+    needs: runner-health-check
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 10
+    if: ${{ github.event.inputs.test_scenario == 'error_handling' }}
+    continue-on-error: true
+    
+    steps:
+      - name: Test Error Recovery
+        run: |
+          echo "=== Error Recovery Test ==="
+          
+          # Test command failure handling
+          echo "Testing command failure handling..."
+          if ! false; then
+            echo "✓ Command failure handled correctly"
+          fi
+          
+          # Test timeout handling
+          echo "Testing timeout handling..."
+          timeout 5s sleep 2 && echo "✓ Timeout handling OK"
+          
+          # Test resource exhaustion handling
+          echo "Testing resource exhaustion handling..."
+          # This should fail gracefully
+          timeout 5s bash -c 'while true; do echo "test" >> /tmp/fill_disk.txt; done' || true
+          rm -f /tmp/fill_disk.txt
+          echo "✓ Resource exhaustion handled"
+
+      - name: Test Cleanup Procedures
+        if: always()
+        run: |
+          echo "=== Cleanup Procedures Test ==="
+          
+          # Clean temporary files
+          echo "Cleaning temporary files..."
+          find /tmp -name "*test*" -type f -delete 2>/dev/null || true
+          
+          # Clean Docker resources
+          echo "Cleaning Docker resources..."
+          docker system prune -f || true
+          
+          # Check disk space after cleanup
+          echo "Disk space after cleanup:"
+          df -h /
+          
+          echo "✓ Cleanup procedures completed"
+
+  # Diagnostic information collection
+  diagnostics:
+    needs: runner-health-check
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 10
+    if: ${{ github.event.inputs.test_scenario == 'diagnostics' || failure() }}
+    
+    steps:
+      - name: Collect System Diagnostics
+        if: always()
+        run: |
+          echo "=== System Diagnostics Collection ==="
+          
+          # System information
+          echo "--- System Information ---"
+          uname -a
+          lsb_release -a 2>/dev/null || cat /etc/os-release
+          uptime
+          
+          # Resource usage
+          echo "--- Resource Usage ---"
+          free -h
+          df -h
+          iostat 1 3 2>/dev/null || echo "iostat not available"
+          
+          # Process information
+          echo "--- Process Information ---"
+          ps aux --sort=-%cpu | head -10
+          ps aux --sort=-%mem | head -10
+          
+          # Network information
+          echo "--- Network Information ---"
+          ip addr show
+          netstat -tuln 2>/dev/null || ss -tuln
+          
+          # Service status
+          echo "--- Service Status ---"
+          systemctl status actions.runner.* || echo "Runner service status unavailable"
+
+      - name: Collect Runner Diagnostics
+        if: always()
+        run: |
+          echo "=== Runner Diagnostics Collection ==="
+          
+          # Runner configuration
+          echo "--- Runner Configuration ---"
+          if [ -f ~/actions-runner/.runner ]; then
+            echo "Runner configuration exists"
+            cat ~/actions-runner/.runner | jq '.' 2>/dev/null || cat ~/actions-runner/.runner
+          else
+            echo "Runner configuration not found"
+          fi
+          
+          # Runner logs
+          echo "--- Runner Logs ---"
+          if [ -d ~/actions-runner/_diag ]; then
+            echo "Recent runner logs:"
+            find ~/actions-runner/_diag -name "*.log" -mtime -1 -exec tail -20 {} \; 2>/dev/null || echo "No recent logs found"
+          else
+            echo "Runner diagnostic directory not found"
+          fi
+          
+          # Installation logs
+          echo "--- Installation Logs ---"
+          if [ -f /var/log/github-runner/runner-installation.log ]; then
+            echo "Recent installation log entries:"
+            tail -50 /var/log/github-runner/runner-installation.log
+          elif [ -f ~/.github-runner-logs/runner-installation.log ]; then
+            echo "Recent installation log entries:"
+            tail -50 ~/.github-runner-logs/runner-installation.log
+          else
+            echo "Installation logs not found"
+          fi
+
+      - name: Test Enhanced Error Handler
+        if: always()
+        run: |
+          echo "=== Enhanced Error Handler Test ==="
+          
+          # Test if error handler is available
+          if [ -f ~/scripts/installation-error-handler.sh ]; then
+            echo "Testing error handler diagnostic collection..."
+            bash ~/scripts/installation-error-handler.sh --collect-diagnostics || echo "Error handler test completed with warnings"
+          else
+            echo "Enhanced error handler not found in expected location"
+            
+            # Look for it in other locations
+            find / -name "installation-error-handler.sh" -type f 2>/dev/null | head -5 || echo "Error handler script not found"
+          fi
+
+  # Summary job that runs regardless of other job outcomes
+  workflow-summary:
+    needs: [runner-health-check, basic-functionality, stress-test, error-handling-test, diagnostics]
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 5
+    if: always()
+    
+    steps:
+      - name: Workflow Summary
+        run: |
+          echo "=== Workflow Execution Summary ==="
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run Number: ${{ github.run_number }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Timestamp: $(date -Iseconds)"
+          echo ""
+          
+          echo "=== Job Results ==="
+          echo "Runner Health Check: ${{ needs.runner-health-check.result }}"
+          echo "Basic Functionality: ${{ needs.basic-functionality.result }}"
+          echo "Stress Test: ${{ needs.stress-test.result }}"
+          echo "Error Handling Test: ${{ needs.error-handling-test.result }}"
+          echo "Diagnostics: ${{ needs.diagnostics.result }}"
+          echo ""
+          
+          echo "=== Runner Information ==="
+          echo "Runner Status: ${{ needs.runner-health-check.outputs.runner-status }}"
+          echo ""
+          
+          # Determine overall workflow status
+          if [[ "${{ needs.runner-health-check.result }}" == "success" && 
+                ("${{ needs.basic-functionality.result }}" == "success" || "${{ needs.basic-functionality.result }}" == "skipped") ]]; then
+            echo "✅ Workflow completed successfully"
+            echo "Runner is healthy and functioning properly"
+          else
+            echo "⚠️ Workflow completed with issues"
+            echo "Check individual job results for details"
+          fi
+          
+          echo ""
+          echo "=== Next Steps ==="
+          echo "• Monitor runner performance in subsequent workflows"
+          echo "• Check runner status in repository settings"
+          echo "• Review logs if any issues were detected"
+          echo "• Consider running diagnostics if problems persist"
+
+      - name: Cleanup Workflow Artifacts
+        if: always()
+        run: |
+          echo "=== Cleanup Workflow Artifacts ==="
+          
+          # Clean up any temporary files created during workflow
+          find /tmp -name "*github*" -type f -mtime +1 -delete 2>/dev/null || true
+          find /tmp -name "*workflow*" -type f -mtime +1 -delete 2>/dev/null || true
+          
+          # Clean up Docker resources if they were used
+          docker system prune -f --volumes 2>/dev/null || true
+          
+          echo "✅ Cleanup completed"

@@ -15,6 +15,9 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 - **Pre-installed Tools**: Docker, AWS CLI, Python, Node.js, Java 17, Terraform, kubectl, Helm, Git
 - **Secure**: Restricted network access and encrypted storage
 - **Automated Management**: Complete lifecycle management via scripts and workflows
+- **🆕 Robust Installation**: Enhanced installation process with package conflict resolution, retry mechanisms, and comprehensive error handling
+- **🆕 System Readiness Validation**: Automatic cloud-init waiting and system state validation
+- **🆕 Comprehensive Logging**: Detailed installation logs and metrics collection for troubleshooting
 
 ## 🏗️ Architecture
 
@@ -369,6 +372,76 @@ jobs:
           aws --version
 ```
 
+## 🔧 Enhanced Installation Process
+
+The runner configuration process has been enhanced with robust installation mechanisms to handle common issues that occur during EC2 instance setup, particularly package management conflicts and system initialization delays.
+
+### Key Enhancements
+
+- **🛡️ System Readiness Validation**: Automatically waits for cloud-init to complete and validates system resources
+- **📦 Package Manager Monitoring**: Detects and waits for running package managers (apt, dpkg, unattended-upgrades)
+- **🔄 Retry Mechanisms**: Exponential backoff retry for package installations with up to 5-minute delays
+- **📊 Comprehensive Logging**: Detailed installation logs and metrics collection for troubleshooting
+- **🚨 Enhanced Error Handling**: Specific error messages with troubleshooting guidance
+
+### How It Works
+
+The enhanced `configure-repository-runner.sh` script now follows this robust process:
+
+1. **System Readiness Check** (⏱️ up to 10 minutes)
+   - Waits for cloud-init to complete
+   - Validates disk space (requires 2GB+)
+   - Tests network connectivity to GitHub
+
+2. **Package Manager Preparation** (⏱️ up to 5 minutes)
+   - Detects running apt/dpkg processes
+   - Waits for unattended-upgrades to complete
+   - Shows progress indicators during waits
+
+3. **Robust Installation** (⏱️ with retries)
+   - Downloads GitHub Actions runner with retry
+   - Installs dependencies with exponential backoff
+   - Handles package lock conflicts automatically
+
+4. **Post-Installation Verification**
+   - Verifies all dependencies are installed
+   - Confirms runner service is active
+   - Validates GitHub registration
+
+### Installation Logs and Metrics
+
+Enhanced logging provides detailed information for troubleshooting:
+
+```bash
+# View installation logs
+ssh -i ~/.ssh/your-key.pem ubuntu@your-instance-ip
+sudo tail -f /var/log/github-runner/runner-installation.log
+
+# View installation metrics (if jq is available)
+cat /var/log/github-runner/installation-metrics.json | jq '.'
+```
+
+### Common Scenarios Handled
+
+| Scenario | How It's Handled | Typical Duration |
+|----------|------------------|------------------|
+| **Fresh EC2 Instance** | Waits for cloud-init, then proceeds normally | 2-5 minutes |
+| **System Updates Running** | Waits for unattended-upgrades to complete | 5-15 minutes |
+| **Package Lock Conflicts** | Detects locks, waits, retries with backoff | 2-10 minutes |
+| **Network Issues** | Retries downloads with exponential backoff | 1-5 minutes |
+| **Low Resources** | Validates space, provides warnings, continues | 1-2 minutes |
+
+### Troubleshooting Enhanced Installation
+
+If installation fails, the enhanced error handler provides:
+
+- **Detailed Error Context**: Specific error codes and messages
+- **System Diagnostics**: Automatic collection of system state
+- **Troubleshooting Steps**: Specific guidance for each error type
+- **Recovery Suggestions**: Manual intervention steps if needed
+
+For comprehensive troubleshooting, see [Installation Troubleshooting Guide](docs/installation-troubleshooting.md).
+
 ## 🎯 Usage
 
 ### Demo Workflows (Simplified)
@@ -610,6 +683,15 @@ tags = {
 
 ## 🔍 Troubleshooting
 
+> **📖 For comprehensive troubleshooting, see the [Installation Troubleshooting Guide](docs/installation-troubleshooting.md)**
+
+The enhanced installation process includes robust error handling and diagnostic tools. When issues occur, you'll receive:
+
+- **Specific Error Codes**: Structured error codes (100-999) for different failure types
+- **Detailed Diagnostics**: Automatic system state collection and analysis
+- **Troubleshooting Steps**: Specific guidance for each error scenario
+- **Recovery Suggestions**: Manual intervention steps when needed
+
 ### Quick Validation
 
 Before troubleshooting issues, run the comprehensive validation script:
@@ -799,6 +881,7 @@ sudo journalctl -u actions.runner.* -f
 
 ### Documentation
 - [GitHub Runner Installation Guide](docs/github-runner-setup.md) - Complete setup instructions for repository-level runners
+- [🆕 Installation Troubleshooting Guide](docs/installation-troubleshooting.md) - Comprehensive troubleshooting for enhanced installation process
 - [Repository Migration Guide](docs/repository-migration-guide.md) - Step-by-step migration from organization to repository setup
 - [Repository Switching Guide](docs/repository-switching-guide.md) - How to switch runner between different repositories
 - [Repository Troubleshooting Guide](docs/repository-troubleshooting-guide.md) - Comprehensive troubleshooting for repository-level issues
@@ -807,11 +890,24 @@ sudo journalctl -u actions.runner.* -f
 
 ### Scripts and Tools
 - [Create Repository Runner Script](scripts/create-repository-runner.sh) - Provision dedicated EC2 instance for repository
-- [Configure Repository Runner Script](scripts/configure-repository-runner.sh) - Configure runner on provisioned instance  
+- [🆕 Enhanced Configure Repository Runner Script](scripts/configure-repository-runner.sh) - Configure runner with robust installation process
 - [Destroy Repository Runner Script](scripts/destroy-repository-runner.sh) - Clean up repository-specific resources
 - [Repository Validation Script](scripts/validate-repository-configuration.sh) - Comprehensive validation of repository setup
 - [Health Check Script](scripts/health-check-runner.sh) - Monitor repository runner health and status
 - [Comprehensive Test Suite](scripts/run-comprehensive-tests.sh) - Run all validation and integration tests
+
+### 🆕 Enhanced Installation Libraries
+- [System Readiness Functions](scripts/system-readiness-functions.sh) - Cloud-init validation and system resource checking
+- [Package Manager Functions](scripts/package-manager-functions.sh) - Package conflict resolution and retry mechanisms
+- [Installation Error Handler](scripts/installation-error-handler.sh) - Comprehensive error handling and diagnostics
+- [Installation Logger](scripts/installation-logger.sh) - Detailed logging and metrics collection
+
+### 🆕 Testing and Validation
+- [System Readiness Tests](scripts/test-system-readiness.sh) - Unit tests for system validation functions
+- [Installation Robustness Tests](scripts/test-installation-robustness.sh) - Integration tests for installation process
+
+### 🆕 Examples and Templates
+- [Enhanced Runner Workflow](examples/enhanced-runner-workflow.yml) - Example workflow with error handling and diagnostics
 
 ### External Resources
 - [GitHub Actions Self-hosted Runners](https://docs.github.com/en/actions/hosting-your-own-runners)

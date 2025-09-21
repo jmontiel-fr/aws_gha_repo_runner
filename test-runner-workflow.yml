@@ -1,0 +1,39 @@
+name: Test Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  test-runner:
+    runs-on: [self-hosted, gha_aws_runner]
+    timeout-minutes: 5
+    
+    steps:
+      - name: Test Runner Environment
+        run: |
+          echo "🎉 Runner is working!"
+          echo "Hostname: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Working Directory: $(pwd)"
+          echo "Instance: runner-jmontiel-fr-crypto-robot"
+          
+      - name: Check Available Tools
+        run: |
+          echo "=== Available Tools ==="
+          echo "Docker: $(docker --version 2>/dev/null || echo 'Not available')"
+          echo "AWS CLI: $(aws --version 2>/dev/null || echo 'Not available')"
+          echo "Node.js: $(node --version 2>/dev/null || echo 'Not available')"
+          echo "Python: $(python3 --version 2>/dev/null || echo 'Not available')"
+          
+      - name: Test Docker
+        run: |
+          echo "=== Testing Docker ==="
+          docker run --rm hello-world
+          
+      - name: Success Message
+        run: |
+          echo "✅ Self-hosted runner is fully operational!"
+          echo "Repository: jmontiel-fr/crypto-robot"
+          echo "Runner: gha_aws_runner"
