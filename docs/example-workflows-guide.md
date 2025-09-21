@@ -1,49 +1,76 @@
 # Example Workflows Guide
 
-This guide explains all the example workflows provided for testing and demonstrating repository-level GitHub Actions runners.
+This guide explains the simplified demo workflows for testing and demonstrating repository-level GitHub Actions runners.
 
 ## Overview
 
-The repository includes several example workflows that demonstrate different aspects of repository-level runner functionality:
+The repository includes focused demo workflows that demonstrate the complete runner lifecycle:
 
-1. **Simple Runner Test** - Basic functionality test that works with any repository
-2. **Test Repository Runner** - Comprehensive testing with multiple scenarios
-3. **Repository Type Tests** - Tests for different repository types (public/private)
-4. **Feature Demonstration** - Complete feature showcase with debugging
-5. **Runner Demo** - Interactive demo with job type selection
-6. **Configure Runner** - Manual runner management workflow
+1. **Runner Demo - Create & Delete** - Complete lifecycle from creation to cleanup
+2. **Runner Demo - Start & Stop** - Cost-optimized management of existing runners
+3. **Test Repository Runner** - Comprehensive testing with multiple scenarios
+4. **Repository Type Tests** - Tests for different repository types (public/private)
+5. **Configure Runner** - Manual runner management workflow
 
 ## Workflow Details
 
-### 1. Simple Runner Test (`simple-runner-test.yml`)
+### 1. Runner Demo - Create & Delete (`runner-demo-create-delete.yml`)
 
-**Purpose:** Basic test that automatically works with any repository, regardless of configuration.
+**Purpose:** Complete lifecycle demonstration showing creation, usage, and cleanup of a dedicated runner.
 
 **Features:**
-- ✅ Automatic configuration detection
-- ✅ Works with both GitHub-hosted and self-hosted runners
-- ✅ Graceful fallback to GitHub-hosted if self-hosted not available
-- ✅ Basic environment and tool testing
-- ✅ Repository content validation
+- ✅ Creates new EC2 instance with parametrized naming
+- ✅ Registers runner with GitHub repository
+- ✅ Executes comprehensive tests (Docker, AWS CLI, Python, Node.js, Java, Terraform)
+- ✅ Deregisters runner and deletes EC2 instance
+- ✅ Complete cleanup - no resources left behind
 
 **When to use:**
-- First-time setup validation
-- Quick health checks
-- Continuous integration testing
-- Demonstrating basic functionality
+- First-time setup demonstration
+- Testing complete runner lifecycle
+- Temporary runner for specific tasks
+- Learning how the system works end-to-end
 
 **Triggers:**
-- Manual dispatch (`workflow_dispatch`)
-- Push to main/master branch (when workflow file changes)
-- Pull requests to main/master branch
+- Manual dispatch (`workflow_dispatch`) with optional runner suffix
 
 **Example usage:**
 ```yaml
-# Automatically triggered on push/PR
-# Or run manually from Actions tab
+# Manual trigger from Actions tab
+# Input: runner_suffix (optional, default: "demo")
+# Creates: runner-{owner}-{repo}-{suffix}
+# Result: Temporary runner for testing, fully cleaned up
 ```
 
-### 2. Test Repository Runner (`test-repository-runner.yml`)
+### 2. Runner Demo - Start & Stop (`runner-demo-start-stop.yml`)
+
+**Purpose:** Cost-optimized management of existing runner instances.
+
+**Features:**
+- ✅ Checks if existing runner instance is running
+- ✅ Starts stopped instance if needed (cost optimization)
+- ✅ Executes sample workload on existing runner
+- ✅ Stops instance after jobs complete (saves costs)
+- ✅ Smart logic: Only stops if it started the instance
+
+**When to use:**
+- Managing existing runners for cost optimization
+- Testing with pre-configured runners
+- Development workflows with intermittent usage
+- Demonstrating start/stop lifecycle
+
+**Triggers:**
+- Manual dispatch with instance ID and runner name inputs
+
+**Example usage:**
+```yaml
+# Manual trigger from Actions tab
+# Inputs: instance_id, runner_name
+# Manages: Existing runner lifecycle
+# Optimizes: Costs by stopping when not in use
+```
+
+### 3. Test Repository Runner (`test-repository-runner.yml`)
 
 **Purpose:** Comprehensive testing workflow with multiple test scenarios and extensive debugging.
 
@@ -75,7 +102,7 @@ The repository includes several example workflows that demonstrate different asp
 # - skip_cleanup: false
 ```
 
-### 3. Repository Type Tests (`repository-type-tests.yml`)
+### 4. Repository Type Tests (`repository-type-tests.yml`)
 
 **Purpose:** Test runner behavior across different repository types and configurations.
 
@@ -108,75 +135,7 @@ validate_permissions: true
 test_type: "public-simulation"
 ```
 
-### 4. Feature Demonstration (`feature-demonstration.yml`)
-
-**Purpose:** Complete showcase of all repository runner features with detailed explanations.
-
-**Features:**
-- ✅ Auto repository detection and configuration
-- ✅ Intelligent runner lifecycle management
-- ✅ Advanced debugging and diagnostics
-- ✅ Performance monitoring and optimization
-- ✅ Security and compliance features
-- ✅ Failure scenario testing
-
-**Demonstration Levels:**
-- **Basic:** Core functionality only
-- **Intermediate:** Additional debugging features
-- **Advanced:** Performance monitoring included
-- **Complete:** All features including security analysis
-
-**When to use:**
-- Learning about runner capabilities
-- Demonstrating features to stakeholders
-- Comprehensive system analysis
-- Training and documentation
-
-**Example usage:**
-```bash
-# Complete feature demonstration
-demo_level: "complete"
-enable_debugging: true
-test_failure_scenarios: true
-```
-
-### 5. Runner Demo (`runner-demo.yml`)
-
-**Purpose:** Interactive demonstration workflow with selectable job types.
-
-**Features:**
-- ✅ Multiple job type demonstrations (build, test, deploy, validation)
-- ✅ Enhanced debugging output
-- ✅ Resource usage monitoring
-- ✅ Tool availability testing
-- ✅ Optional cleanup skip for debugging
-
-**Job Types:**
-- **Build:** Simulated build process with artifact creation
-- **Test:** Unit test execution with results reporting
-- **Deploy:** Deployment simulation with manifest creation
-- **Validation:** Comprehensive environment validation
-
-**When to use:**
-- Interactive demonstrations
-- Testing specific job types
-- Debugging runner environment
-- Training purposes
-
-**Example usage:**
-```bash
-# Test build functionality
-job_type: "build"
-enable_debugging: false
-skip_cleanup: false
-
-# Debug validation with cleanup skip
-job_type: "validation"
-enable_debugging: true
-skip_cleanup: true
-```
-
-### 6. Configure Runner (`configure-runner.yml`)
+### 5. Configure Runner (`configure-runner.yml`)
 
 **Purpose:** Manual runner management and configuration workflow.
 
@@ -216,23 +175,23 @@ action: "remove"
 
 1. **First-time setup:**
    ```bash
-   # 1. Run Simple Runner Test to validate basic setup
-   # 2. If self-hosted runner not available, configure secrets
-   # 3. Run Configure Runner workflow to register runner
+   # 1. Run Runner Demo - Create & Delete to test complete lifecycle
+   # 2. Configure repository secrets if needed
+   # 3. Run Configure Runner workflow for manual setup
    # 4. Run Test Repository Runner for comprehensive validation
    ```
 
-2. **Regular testing:**
+2. **Regular usage:**
    ```bash
-   # Use Simple Runner Test for quick health checks
-   # Use specific job types in Runner Demo for targeted testing
+   # Use Runner Demo - Create & Delete for temporary testing
+   # Use Runner Demo - Start & Stop for cost-optimized existing runners
    ```
 
 3. **Troubleshooting:**
    ```bash
    # 1. Run Test Repository Runner with debug mode enabled
    # 2. Use Repository Type Tests to check configuration
-   # 3. Run Feature Demonstration for comprehensive analysis
+   # 3. Use Runner Demo - Create & Delete to test from scratch
    ```
 
 ### Debugging Workflows
@@ -332,10 +291,10 @@ RUNNER_NAME           # GitHub runner name (defaults to gha_aws_runner)
 
 ### Workflow Selection
 
-- **Development:** Use Simple Runner Test for quick validation
+- **Development:** Use Runner Demo - Create & Delete for testing new setups
 - **Testing:** Use Test Repository Runner for comprehensive testing
-- **Production:** Use specific job types in Runner Demo
-- **Troubleshooting:** Use Feature Demonstration with debugging enabled
+- **Production:** Use Runner Demo - Start & Stop for cost-optimized existing runners
+- **Troubleshooting:** Use Test Repository Runner with debugging enabled
 
 ### Security Considerations
 

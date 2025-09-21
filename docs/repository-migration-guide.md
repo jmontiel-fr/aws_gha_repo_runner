@@ -285,19 +285,16 @@ Create the repository-level workflow files in your repository:
 mkdir -p .github/workflows
 
 # Create repository runner demo workflow
-cat > .github/workflows/runner-demo.yml << 'EOF'
-name: Repository Self-Hosted Runner Demo
+cat > .github/workflows/runner-demo-create-delete.yml << 'EOF'
+name: Runner Demo - Create & Delete Lifecycle
 on: 
   workflow_dispatch:
     inputs:
-      job_type:
-        description: 'Type of job to run'
-        required: true
-        default: 'build'
-        type: choice
-        options:
-        - build
-        - test
+      runner_suffix:
+        description: 'Suffix for runner name (e.g., test, demo)'
+        required: false
+        default: 'demo'
+        type: string
         - deploy
 
 jobs:

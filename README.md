@@ -75,7 +75,7 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 
 2. **Create EC2 instance for your repository:**
    ```bash
-   ./scripts/create-repository-runner.sh \
+   export PATH=$PATH:. && ./scripts/create-repository-runner.sh \
      --username YOUR_GITHUB_USERNAME \
      --repository YOUR_REPO_NAME \
      --key-pair YOUR_KEY_PAIR \
@@ -84,10 +84,12 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 
 3. **Register runner with GitHub:**
    ```bash
-   ./scripts/configure-repository-runner.sh \
+   export PATH=$PATH:. && ./scripts/configure-repository-runner.sh \
      --username YOUR_GITHUB_USERNAME \
      --repository YOUR_REPO_NAME \
      --instance-id i-xxxxxxxxxxxxx \
+     --region YOUR_AWS_REGION \
+     --key-pair YOUR_KEY_PAIR \
      --pat YOUR_GITHUB_PAT
    ```
 
@@ -118,6 +120,7 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 ### Local Requirements
 - Terraform >= 1.6.0
 - Git
+- **Note**: Scripts require `jq` which is included in the repository. The `export PATH=$PATH:.` command adds the current directory to PATH so scripts can find `jq`.
 
 ## 🛠️ Installation
 
@@ -164,7 +167,7 @@ For each repository that needs a dedicated runner:
 
 ```bash
 # Create dedicated EC2 instance for a repository
-./scripts/create-repository-runner.sh \
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh \
   --username your-github-username \
   --repository your-repo-name \
   --key-pair your-key-pair-name \
@@ -172,13 +175,13 @@ For each repository that needs a dedicated runner:
   --region us-east-1
 
 # Example: Create runner for web application
-./scripts/create-repository-runner.sh \
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh \
   --username johndoe \
   --repository my-web-app \
   --key-pair my-runner-key
 
 # Example: Create runner for API service with monitoring
-./scripts/create-repository-runner.sh \
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh \
   --username johndoe \
   --repository api-service \
   --key-pair my-runner-key \
@@ -204,22 +207,22 @@ For **each target repository** that will use a dedicated runner, add these varia
 
 ## Required Variables (Minimum Setup)
 
-| Variable Name           | Type        | Description                                         | Example                                    |
-| ----------------------- | ----------- | --------------------------------------------------- | ------------------------------------------ |
-| `AWS_ACCESS_KEY_ID`     | **Secret**  | AWS access key for EC2 management                   | `AKIAIOSFODNN7EXAMPLE`                     |
-| `AWS_SECRET_ACCESS_KEY` | **Secret**  | AWS secret access key                               | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
-| `AWS_REGION`            | Variable    | AWS region where infrastructure is deployed         | `us-east-1`                                |
-| `GH_PAT`                | **Secret**  | GitHub Personal Access Token with `repo` scope only | `ghp_xxxxxxxxxxxxxxxxxxxx`                 |
-| `KEY_PAIR_NAME`         | Variable    | AWS EC2 Key Pair name (must exist in your AWS region) | `gha-runner-key-pair`                      |
+| Variable Name           | Type       | Description                                           | Example                                    |
+| ----------------------- | ---------- | ----------------------------------------------------- | ------------------------------------------ |
+| `AWS_ACCESS_KEY_ID`     | **Secret** | AWS access key for EC2 management                     | `AKIAIOSFODNN7EXAMPLE`                     |
+| `AWS_SECRET_ACCESS_KEY` | **Secret** | AWS secret access key                                 | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
+| `AWS_REGION`            | Variable   | AWS region where infrastructure is deployed           | `us-east-1`                                |
+| `GH_PAT`                | **Secret** | GitHub Personal Access Token with `repo` scope only   | `ghp_xxxxxxxxxxxxxxxxxxxx`                 |
+| `KEY_PAIR_NAME`         | Variable   | AWS EC2 Key Pair name (must exist in your AWS region) | `gha-runner-key-pair`                      |
 
 ## Optional Variables (Auto-derived if not set)
 
-| Variable Name           | Type        | Description                                         | Auto-derived Value                         |
-| ----------------------- | ----------- | --------------------------------------------------- | ------------------------------------------ |
-| `GH_USERNAME`           | Variable    | Your GitHub username                                | `${{ github.repository_owner }}`           |
-| `REPOSITORY_NAME`       | Variable    | This repository's name                              | `${{ github.event.repository.name }}`      |
-| `RUNNER_NAME`           | Variable    | GitHub runner name                                  | `runner-${{ github.repository_owner }}-${{ github.event.repository.name }}` |
-| `INSTANCE_TYPE`         | Variable    | EC2 instance type                                   | `t3.micro` (default)                       |
+| Variable Name     | Type     | Description            | Auto-derived Value                                                          |
+| ----------------- | -------- | ---------------------- | --------------------------------------------------------------------------- |
+| `GH_USERNAME`     | Variable | Your GitHub username   | `${{ github.repository_owner }}`                                            |
+| `REPOSITORY_NAME` | Variable | This repository's name | `${{ github.event.repository.name }}`                                       |
+| `RUNNER_NAME`     | Variable | GitHub runner name     | `runner-${{ github.repository_owner }}-${{ github.event.repository.name }}` |
+| `INSTANCE_TYPE`   | Variable | EC2 instance type      | `t3.micro` (default)                                                        |
 
 ## Why So Many Variables? 🤔
 
@@ -303,10 +306,12 @@ After creating the EC2 instance, you need to register it as a GitHub Actions run
 
 ```bash
 # Configure the runner for your repository
-./scripts/configure-repository-runner.sh \
+export PATH=$PATH:. && ./scripts/configure-repository-runner.sh \
   --username johndoe \
   --repository my-web-app \
   --instance-id i-1234567890abcdef0 \
+  --region eu-west-1 \
+  --key-pair gha-runner-key-pair \
   --pat ghp_xxxxxxxxxxxxxxxxxxxx
 
 # The runner will be registered as: runner-johndoe-my-web-app
@@ -366,57 +371,52 @@ jobs:
 
 ## 🎯 Usage
 
-### Automated Repository Workflow (Recommended)
+### Demo Workflows (Simplified)
 
-Use the provided example workflow in `.github/workflows/runner-demo-minimal.yml`. This workflow uses **minimal variables** and auto-derives repository information from GitHub context:
+Two focused demo workflows demonstrate the complete runner lifecycle:
 
+#### 1. **runner-demo-create-delete.yml** - Complete Lifecycle Demo
+Shows creating a new runner from scratch, using it, then cleaning up everything:
+
+**What it does:**
+- ✨ Creates new EC2 instance with parametrized naming
+- 🔗 Registers runner with GitHub repository  
+- 🧪 Executes comprehensive tests (Docker, AWS CLI, Python, Node.js, Java, Terraform)
+- 🧹 Deregisters runner and deletes EC2 instance
+- 💰 Complete cleanup - no resources left behind
+
+**Usage:**
 ```yaml
-name: Repository Self-Hosted Runner Demo
-on: 
-  workflow_dispatch:
-    inputs:
-      provision_instance:
-        description: 'Create new EC2 instance if needed'
-        required: false
-        default: false
-        type: boolean
+# Manual trigger from Actions tab
+# Input: runner_suffix (optional, default: "demo")
+# Creates: runner-{owner}-{repo}-{suffix}
+# Result: Temporary runner for testing, fully cleaned up
+```
 
-jobs:
-  provision-runner:
-    name: Provision dedicated EC2 runner instance
-    runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.provision_instance == 'true' }}
-    steps:
-      - name: Provision EC2 instance for repository
-        run: |
-          # Creates instance: runner-${{ github.repository_owner }}-${{ github.event.repository.name }}
-          
-  start-runner:
-    runs-on: ubuntu-latest
-    needs: [provision-runner]
-    if: always() && !failure()
-    outputs:
-      runner-name: ${{ steps.start.outputs.runner-name }}
-    steps:
-      - name: Start dedicated repository runner
-        # Starts the dedicated instance and registers repository runner
-        
-  your-job:
-    needs: start-runner  
-    runs-on: [self-hosted, gha_aws_runner]
-    steps:
-      - name: Your workflow steps here
-        run: |
-          echo "Running on dedicated AWS runner for ${{ github.repository }}"
-          echo "Instance: runner-${{ github.repository_owner }}-${{ github.event.repository.name }}"
-          docker --version
-          aws --version
+#### 2. **runner-demo-start-stop.yml** - Cost-Optimized Management
+Manages existing runner instances for cost optimization:
 
-# ✨ Benefits of Minimal Variables Approach:
-# - Only 5 secrets/variables to configure per repository
-# - Username and repository name auto-derived from GitHub context
-# - Less configuration, fewer errors
-# - Consistent naming across all repositories
+**What it does:**
+- 🔍 Checks if existing runner instance is running
+- ▶️ Starts stopped instance if needed (cost optimization)
+- 🧪 Executes sample workload on existing runner
+- ⏹️ Stops instance after jobs complete (saves costs)
+- 💡 Smart logic: Only stops if it started the instance
+
+**Usage:**
+```yaml
+# Manual trigger from Actions tab
+# Inputs: instance_id, runner_name
+# Manages: Existing runner lifecycle
+# Optimizes: Costs by stopping when not in use
+```
+
+**Benefits of This Simplified Approach:**
+- 🎯 **Two clear use cases**: New runner creation vs existing runner management
+- 📝 **Minimal configuration**: Uses GitHub context for auto-derivation
+- 💰 **Cost awareness**: Demonstrates both creation and optimization patterns
+- 🔄 **Real-world scenarios**: Covers typical development workflows
+- ✨ **No complexity**: Removed multiple confusing demo examples
           
   stop-runner:
     needs: [start-runner, your-job]
@@ -431,65 +431,41 @@ jobs:
 
 For manual runner installation, see [docs/github-runner-setup.md](docs/github-runner-setup.md).
 
-### Using Dedicated Runners in Your Workflows
+### Using Runners in Your Workflows
 
-Each repository uses its own dedicated runner with the `gha_aws_runner` label:
+Simply use the `gha_aws_runner` label in any workflow:
 
-#### Example Web Application Workflow:
 ```yaml
-# Repository: johndoe/my-web-app
-# Uses instance: runner-johndoe-my-web-app
 jobs:
   build:
     runs-on: [self-hosted, gha_aws_runner]
     steps:
       - uses: actions/checkout@v4
-      - name: Build frontend with Docker
+      - name: Your build steps
         run: |
-          echo "Building on dedicated runner: runner-johndoe-my-web-app"
-          docker build -t my-web-app .
-      - name: Deploy with Terraform
-        run: terraform apply -auto-approve
+          # All tools available: Docker, AWS CLI, Python, Node.js, Java, Terraform, kubectl, Helm
+          docker build -t my-app .
+          terraform plan
+          kubectl version --client
 ```
 
-#### Example API Service Workflow:
-```yaml
-# Repository: johndoe/api-service  
-# Uses instance: runner-johndoe-api-service
-jobs:
-  test:
-    runs-on: [self-hosted, gha_aws_runner]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run API tests
-        run: |
-          echo "Testing on dedicated runner: runner-johndoe-api-service"
-          python -m pytest
-          docker build -t api-service .
-```
-
-#### Example Mobile App Workflow:
-```yaml
-# Repository: johndoe/mobile-app
-# Uses instance: runner-johndoe-mobile-app
-jobs:
-  build:
-    runs-on: [self-hosted, gha_aws_runner]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build mobile app
-        run: |
-          echo "Building on dedicated runner: runner-johndoe-mobile-app"
-          # Mobile-specific build commands
-```
+**Available Tools on Runner:**
+- 🐳 **Docker** + Docker Compose
+- ☁️ **AWS CLI** v2
+- 🐍 **Python** 3 + pip
+- 🟢 **Node.js** v20 LTS
+- ☕ **Java** 17 (OpenJDK)
+- 🏗️ **Terraform** (latest)
+- ⚓ **kubectl** + **Helm**
+- 🔧 **Git** + build tools
 
 ### Multiple Repository Management
 
 ```bash
 # Create runners for multiple repositories
-./scripts/create-repository-runner.sh --username johndoe --repository web-app --key-pair gha-runner-key-pair
-./scripts/create-repository-runner.sh --username johndoe --repository api-service --key-pair gha-runner-key-pair  
-./scripts/create-repository-runner.sh --username johndoe --repository mobile-app --key-pair gha-runner-key-pair
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh --username johndoe --repository web-app --key-pair gha-runner-key-pair
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh --username johndoe --repository api-service --key-pair gha-runner-key-pair  
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh --username johndoe --repository mobile-app --key-pair gha-runner-key-pair
 
 # Results in:
 # - runner-johndoe-web-app
@@ -533,16 +509,37 @@ aws ec2 stop-instances --instance-ids i-1234567890abcdef0
 
 ```bash
 # Destroy repository runner and all resources
-./scripts/destroy-repository-runner.sh \
+export PATH=$PATH:. && ./scripts/destroy-repository-runner.sh \
   --username johndoe \
   --repository my-web-app \
+  --region eu-west-1 \
+  --pat YOUR_GITHUB_PAT \
   --force
 
 # Dry run to see what would be destroyed
-./scripts/destroy-repository-runner.sh \
+export PATH=$PATH:. && ./scripts/destroy-repository-runner.sh \
   --username johndoe \
   --repository api-service \
+  --region eu-west-1 \
+  --pat YOUR_GITHUB_PAT \
   --dry-run
+```
+
+**What the destroy script does:**
+1. **Deregisters runner** from GitHub repository
+2. **Terminates EC2 instance** (`runner-{username}-{repository}`)
+3. **Cleans up resources**: Security groups, Elastic IP, CloudWatch logs
+4. **Removes IAM roles** (if created)
+5. **Deletes Auto Scaling Groups** (if enabled)
+
+**Example: Clean up your test runner:**
+```bash
+export PATH=$PATH:. && ./scripts/destroy-repository-runner.sh \
+  --username jmontiel-fr \
+  --repository crypto-robot-test \
+  --region eu-west-1 \
+  --pat ghp_xxxxxxxxxxxxxxxxxxxx \
+  --force
 ```
 
 ## 💰 Cost Optimization Features
@@ -638,6 +635,59 @@ This script validates:
 - Actions permissions and runner registration capability
 
 ### Common Issues
+
+#### 0. Script Fails with "Missing required tools: jq"
+```bash
+# Problem: jq not found in PATH
+./scripts/create-repository-runner.sh --username johndoe --repository my-app
+# ERROR: Missing required tools: jq
+
+# Solution: Add current directory to PATH (jq is included in repository)
+export PATH=$PATH:. && ./scripts/create-repository-runner.sh --username johndoe --repository my-app
+
+# Alternative: Install jq system-wide (optional)
+# Windows (Git Bash): Already included in repository
+# Linux: sudo apt-get install jq
+# macOS: brew install jq
+```
+
+#### 0.1. Configure Script Fails with "Instance not found in region"
+```bash
+# Problem: Wrong region specified or missing region parameter
+./scripts/configure-repository-runner.sh --username johndoe --repository my-app --instance-id i-123
+# ERROR: Instance 'i-123' not found in region us-east-1
+
+# Solution: Add correct region parameter (must match where instance was created)
+export PATH=$PATH:. && ./scripts/configure-repository-runner.sh \
+  --username johndoe \
+  --repository my-app \
+  --instance-id i-123 \
+  --region eu-west-1 \
+  --key-pair gha-runner-key-pair \
+  --pat YOUR_GITHUB_PAT
+```
+
+#### 0.2. Destroy Script - Clean Up Runners and Resources
+```bash
+# Problem: Need to remove runner and clean up AWS resources
+# Solution: Use destroy script with correct parameters
+
+# Dry run first (recommended)
+export PATH=$PATH:. && ./scripts/destroy-repository-runner.sh \
+  --username johndoe \
+  --repository my-app \
+  --region eu-west-1 \
+  --pat YOUR_GITHUB_PAT \
+  --dry-run
+
+# Actual destruction (after reviewing dry run)
+export PATH=$PATH:. && ./scripts/destroy-repository-runner.sh \
+  --username johndoe \
+  --repository my-app \
+  --region eu-west-1 \
+  --pat YOUR_GITHUB_PAT \
+  --force
+```
 
 #### 1. Runner Registration Fails
 ```bash

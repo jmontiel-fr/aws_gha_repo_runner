@@ -229,6 +229,9 @@ validate_parameters() {
         # Create the SSH directory if it doesn't exist
         mkdir -p ~/.ssh
         
+        # Remove existing key file if it exists
+        rm -f ~/.ssh/${KEY_PAIR_NAME}.pem
+        
         # Create the key pair and save the private key
         aws ec2 create-key-pair \
             --region "$AWS_REGION" \
@@ -303,11 +306,20 @@ prepare_aws_resources() {
     # Use existing security group created by Terraform
     log_info "Finding existing security group..."
     
-    SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
-        --region "$AWS_REGION" \
-        --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=gha-repo-runner-*" \
-        --query 'SecurityGroups[0].GroupId' \
-        --output text)
+    # If VPC_ID is not provided, find the security group by name pattern only
+    if [ -n "$VPC_ID" ]; then
+        SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=gha-repo-runner-*" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text)
+    else
+        SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --filters "Name=group-name,Values=gha-repo-runner-*" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text)
+    fi
     
     if [ "$SECURITY_GROUP_ID" = "None" ] || [ -z "$SECURITY_GROUP_ID" ]; then
         log_error "Failed to find existing security group created by Terraform"
@@ -317,6 +329,38 @@ prepare_aws_resources() {
     
     log_success "Using existing security group: $SECURITY_GROUP_ID"
     
+    # Get the VPC ID from the security group
+    VPC_ID=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$SECURITY_GROUP_ID" \
+        --query 'SecurityGroups[0].VpcId' \
+        --output text)
+    
+    # If SUBNET_ID is not provided, find a public subnet in the same VPC
+    if [ -z "$SUBNET_ID" ]; then
+        log_info "Finding public subnet in VPC: $VPC_ID"
+        SUBNET_ID=$(aws ec2 describe-subnets \
+            --region "$AWS_REGION" \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=*public*" \
+            --query 'Subnets[0].SubnetId' \
+            --output text)
+        
+        # If no subnet with "public" tag found, get the first available subnet
+        if [ "$SUBNET_ID" = "None" ] || [ -z "$SUBNET_ID" ]; then
+            SUBNET_ID=$(aws ec2 describe-subnets \
+                --region "$AWS_REGION" \
+                --filters "Name=vpc-id,Values=$VPC_ID" \
+                --query 'Subnets[0].SubnetId' \
+                --output text)
+        fi
+        
+        if [ "$SUBNET_ID" = "None" ] || [ -z "$SUBNET_ID" ]; then
+            log_error "Failed to find subnet in VPC: $VPC_ID"
+            return 1
+        fi
+        
+        log_success "Using subnet: $SUBNET_ID"
+    fi
     
     log_success "AWS resources prepared"
     return 0
@@ -733,10 +777,12 @@ show_results() {
     echo "Next Steps:"
     echo "1. Wait for instance to complete initialization (2-3 minutes)"
     echo "2. Configure the runner using:"
-    echo "   ../scripts/configure-repository-runner.sh \\"
+    echo "   export PATH=\$PATH:. && ../scripts/configure-repository-runner.sh \\"
     echo "     --username $GITHUB_USERNAME \\"
     echo "     --repository $REPOSITORY_NAME \\"
     echo "     --instance-id $INSTANCE_ID \\"
+    echo "     --region $AWS_REGION \\"
+    echo "     --key-pair $KEY_PAIR_NAME \\"
     echo "     --pat YOUR_GITHUB_PAT"
     echo ""
     echo "3. Test the runner with a GitHub Actions workflow"
