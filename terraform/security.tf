@@ -13,7 +13,7 @@ resource "aws_security_group" "gha_runner" {
   description = "Security group for GitHub Actions repository runner EC2 instance"
   vpc_id      = aws_vpc.gha_runner.id
 
-  # SSH access from personal IP only
+  # SSH access from personal IP only (for administration and debugging)
   ingress {
     description = "SSH access from personal IP"
     from_port   = 22
@@ -22,17 +22,9 @@ resource "aws_security_group" "gha_runner" {
     cidr_blocks = [var.personal_ip]
   }
 
-  # HTTPS inbound access from GitHub IP ranges
-  dynamic "ingress" {
-    for_each = local.github_all_ips
-    content {
-      description = "HTTPS from GitHub (${ingress.value})"
-      from_port   = 443
-      to_port     = 443
-      protocol    = "tcp"
-      cidr_blocks = [ingress.value]
-    }
-  }
+  # Note: GitHub Actions runners only need outbound HTTPS access to GitHub.
+  # No inbound HTTPS is required as the runner initiates all connections.
+  # Removing unnecessary inbound HTTPS rule for better security.
 
   # Outbound rules for all traffic (package downloads and GitHub communication)
   egress {

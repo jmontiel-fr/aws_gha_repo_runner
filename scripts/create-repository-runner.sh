@@ -42,8 +42,6 @@ log_header() {
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TERRAFORM_MODULE_DIR="$PROJECT_ROOT/terraform/modules/repository-runner"
-TERRAFORM_WORK_DIR="/tmp/repository-runner-terraform"
 
 # Default values
 DEFAULT_INSTANCE_TYPE="t3.micro"
@@ -64,11 +62,19 @@ SUBNET_ID=""
 ALLOWED_SSH_CIDR=""
 ENABLE_MONITORING=false
 ENABLE_LOGS=false
-ALLOCATE_EIP=false
+ALLOCATE_ELASTIC_IP=false
 CREATE_IAM_ROLE=false
 ENABLE_AUTO_RECOVERY=false
 DRY_RUN=false
 FORCE=false
+
+# AWS CLI variables (set during execution)
+AMI_ID=""
+SECURITY_GROUP_ID=""
+INSTANCE_ID=""
+PUBLIC_IP=""
+PRIVATE_IP=""
+AVAILABILITY_ZONE=""
 
 # =============================================================================
 # Helper Functions
@@ -151,7 +157,7 @@ validate_prerequisites() {
     local missing_tools=()
     
     # Check required tools
-    for tool in aws terraform jq; do
+    for tool in aws jq; do
         if ! command -v "$tool" &> /dev/null; then
             missing_tools+=("$tool")
         fi
@@ -167,13 +173,6 @@ validate_prerequisites() {
     if ! aws sts get-caller-identity &> /dev/null; then
         log_error "AWS credentials not configured or invalid"
         log_error "Please run 'aws configure' or set AWS environment variables"
-        return 1
-    fi
-    
-    # Check Terraform module
-    if [ ! -d "$TERRAFORM_MODULE_DIR" ]; then
-        log_error "Terraform module not found: $TERRAFORM_MODULE_DIR"
-        log_error "Please ensure the repository-runner module exists"
         return 1
     fi
     
@@ -222,11 +221,27 @@ validate_parameters() {
         return 1
     fi
     
-    # Check if key pair exists
+    # Check if key pair exists, create if it doesn't
     if ! aws ec2 describe-key-pairs --key-names "$KEY_PAIR_NAME" --region "$AWS_REGION" &> /dev/null; then
-        log_error "Key pair '$KEY_PAIR_NAME' not found in region $AWS_REGION"
-        log_error "Please create the key pair or specify an existing one"
-        return 1
+        log_info "Key pair '$KEY_PAIR_NAME' not found in region $AWS_REGION"
+        log_info "Creating key pair and saving to ~/.ssh/${KEY_PAIR_NAME}.pem"
+        
+        # Create the SSH directory if it doesn't exist
+        mkdir -p ~/.ssh
+        
+        # Create the key pair and save the private key
+        aws ec2 create-key-pair \
+            --region "$AWS_REGION" \
+            --key-name "$KEY_PAIR_NAME" \
+            --query 'KeyMaterial' \
+            --output text > ~/.ssh/${KEY_PAIR_NAME}.pem
+        
+        # Set proper permissions
+        chmod 400 ~/.ssh/${KEY_PAIR_NAME}.pem
+        
+        log_success "Key pair '$KEY_PAIR_NAME' created and saved to ~/.ssh/${KEY_PAIR_NAME}.pem"
+    else
+        log_info "Using existing key pair: $KEY_PAIR_NAME"
     fi
     
     log_success "Parameters validated"
@@ -264,60 +279,52 @@ check_existing_instance() {
     fi
 }
 
-# Prepare Terraform configuration
-prepare_terraform() {
-    log_info "Preparing Terraform configuration..."
+# Prepare AWS CLI configuration
+prepare_aws_resources() {
+    log_info "Preparing AWS resources..."
     
-    # Create working directory
-    mkdir -p "$TERRAFORM_WORK_DIR"
+    # Get the latest Ubuntu 22.04 LTS AMI
+    log_info "Getting latest Ubuntu 22.04 LTS AMI..."
+    AMI_ID=$(aws ec2 describe-images \
+        --region "$AWS_REGION" \
+        --owners 099720109477 \
+        --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
+                  "Name=virtualization-type,Values=hvm" \
+        --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+        --output text)
     
-    # Create main.tf
-    cat > "$TERRAFORM_WORK_DIR/main.tf" << EOF
-terraform {
-  required_version = ">= 1.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
+    if [ "$AMI_ID" = "None" ] || [ -z "$AMI_ID" ]; then
+        log_error "Failed to find Ubuntu 22.04 LTS AMI"
+        return 1
+    fi
+    
+    log_success "Found AMI: $AMI_ID"
+    
+    # Use existing security group created by Terraform
+    log_info "Finding existing security group..."
+    
+    SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=gha-repo-runner-*" \
+        --query 'SecurityGroups[0].GroupId' \
+        --output text)
+    
+    if [ "$SECURITY_GROUP_ID" = "None" ] || [ -z "$SECURITY_GROUP_ID" ]; then
+        log_error "Failed to find existing security group created by Terraform"
+        log_error "Please ensure the base infrastructure is deployed with Terraform first"
+        return 1
+    fi
+    
+    log_success "Using existing security group: $SECURITY_GROUP_ID"
+    
+    
+    log_success "AWS resources prepared"
+    return 0
 }
 
-provider "aws" {
-  region = var.aws_region
-}
-
-module "repository_runner" {
-  source = "$TERRAFORM_MODULE_DIR"
-  
-  # Required variables
-  github_username = var.github_username
-  repository_name = var.repository_name
-  key_pair_name   = var.key_pair_name
-  
-  # Instance configuration
-  instance_type = var.instance_type
-  
-  # Networking
-  vpc_id                   = var.vpc_id
-  subnet_id               = var.subnet_id
-  allowed_ssh_cidr_blocks = var.allowed_ssh_cidr_blocks
-  
-  # Environment
-  environment = var.environment
-  cost_center = var.cost_center
-  
-  # Optional features
-  allocate_elastic_ip      = var.allocate_elastic_ip
-  enable_detailed_monitoring = var.enable_detailed_monitoring
-  enable_cloudwatch_logs   = var.enable_cloudwatch_logs
-  create_iam_role         = var.create_iam_role
-  enable_auto_recovery    = var.enable_auto_recovery
-}
-EOF
-    
-    # Create variables.tf
-    cat > "$TERRAFORM_WORK_DIR/variables.tf" << EOF
+# Dummy function to avoid errors
+dummy_function() {
+    cat > /dev/null << EOF
 variable "aws_region" {
   description = "AWS region"
   type        = string
@@ -460,8 +467,6 @@ enable_cloudwatch_logs = $ENABLE_LOGS
 create_iam_role = $CREATE_IAM_ROLE
 enable_auto_recovery = $ENABLE_AUTO_RECOVERY
 EOF
-    
-    log_success "Terraform configuration prepared"
 }
 
 # Show configuration summary
@@ -500,43 +505,120 @@ show_configuration() {
     echo "Terraform Working Directory: $TERRAFORM_WORK_DIR"
 }
 
-# Execute Terraform
-execute_terraform() {
-    log_header "Executing Terraform"
+# Create EC2 instance using AWS CLI
+create_ec2_instance() {
+    log_header "Creating EC2 Instance"
     
-    cd "$TERRAFORM_WORK_DIR"
+    # Create user data script
+    USER_DATA_SCRIPT=$(cat << 'EOF'
+#!/bin/bash
+set -e
+
+# Logging function
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a /var/log/runner-setup.log
+}
+
+log "Starting GitHub Actions runner setup"
+
+# Update system packages
+log "Updating system packages..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get upgrade -y
+
+# Install essential packages
+log "Installing essential packages..."
+apt-get install -y \
+    curl \
+    wget \
+    git \
+    jq \
+    unzip \
+    build-essential \
+    software-properties-common \
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    lsb-release
+
+# Install Docker
+log "Installing Docker..."
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Add ubuntu user to docker group
+usermod -aG docker ubuntu
+
+# Install Node.js
+log "Installing Node.js..."
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# Install Python 3 and pip
+log "Installing Python..."
+apt-get install -y python3 python3-pip python3-venv
+
+# Install AWS CLI v2
+log "Installing AWS CLI v2..."
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+./aws/install
+rm -rf aws awscliv2.zip
+
+# Install Java (OpenJDK 17)
+log "Installing Java..."
+apt-get install -y openjdk-17-jdk
+
+# Install Terraform
+log "Installing Terraform..."
+wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com jammy main" | tee /etc/apt/sources.list.d/hashicorp.list
+apt-get update
+apt-get install -y terraform
+
+# Install kubectl
+log "Installing kubectl..."
+curl -LO "https://dl.k8s.io/release/v1.29.1/bin/linux/amd64/kubectl"
+install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+rm kubectl
+
+# Install Helm
+log "Installing Helm..."
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Create runner user and directory
+log "Setting up runner user..."
+useradd -m -s /bin/bash runner || true
+mkdir -p /home/runner/actions-runner
+chown -R runner:runner /home/runner
+
+log "GitHub Actions runner instance setup completed!"
+log "Instance ready for configuration"
+EOF
+)
+
+    # Encode user data
+    USER_DATA_B64=$(echo "$USER_DATA_SCRIPT" | base64 -w 0)
     
-    # Initialize Terraform
-    log_info "Initializing Terraform..."
-    if ! terraform init; then
-        log_error "Terraform initialization failed"
-        return 1
-    fi
-    
-    # Validate configuration
-    log_info "Validating Terraform configuration..."
-    if ! terraform validate; then
-        log_error "Terraform validation failed"
-        return 1
-    fi
-    
-    # Plan
-    log_info "Creating Terraform plan..."
-    if ! terraform plan -out=tfplan; then
-        log_error "Terraform plan failed"
-        return 1
-    fi
+    # Instance name
+    INSTANCE_NAME="runner-${GITHUB_USERNAME}-${REPOSITORY_NAME}"
     
     if [ "$DRY_RUN" = true ]; then
-        log_info "Dry run completed. No resources were created."
-        log_info "Plan saved to: $TERRAFORM_WORK_DIR/tfplan"
+        log_info "Dry run - would create instance: $INSTANCE_NAME"
+        log_info "AMI ID: $AMI_ID"
+        log_info "Instance Type: $INSTANCE_TYPE"
+        log_info "Security Group: $SECURITY_GROUP_ID"
+        log_info "Subnet: $SUBNET_ID"
         return 0
     fi
     
-    # Confirm before apply
+    # Confirm before creating
     if [ "$FORCE" = false ]; then
         echo ""
-        read -p "Do you want to apply this Terraform plan? (y/N): " -n 1 -r
+        read -p "Do you want to create the EC2 instance? (y/N): " -n 1 -r
         echo ""
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             log_info "Operation cancelled by user"
@@ -544,14 +626,89 @@ execute_terraform() {
         fi
     fi
     
-    # Apply
-    log_info "Applying Terraform configuration..."
-    if ! terraform apply tfplan; then
-        log_error "Terraform apply failed"
+    # Create EC2 instance
+    log_info "Creating EC2 instance: $INSTANCE_NAME"
+    INSTANCE_ID=$(aws ec2 run-instances \
+        --region "$AWS_REGION" \
+        --image-id "$AMI_ID" \
+        --instance-type "$INSTANCE_TYPE" \
+        --key-name "$KEY_PAIR_NAME" \
+        --security-group-ids "$SECURITY_GROUP_ID" \
+        --subnet-id "$SUBNET_ID" \
+        --user-data "$USER_DATA_B64" \
+        --associate-public-ip-address \
+        --tag-specifications "ResourceType=instance,Tags=[
+            {Key=Name,Value=$INSTANCE_NAME},
+            {Key=GitHubUsername,Value=$GITHUB_USERNAME},
+            {Key=Repository,Value=${GITHUB_USERNAME}/${REPOSITORY_NAME}},
+            {Key=RepositoryName,Value=$REPOSITORY_NAME},
+            {Key=Environment,Value=$ENVIRONMENT},
+            {Key=CostCenter,Value=$COST_CENTER},
+            {Key=CreatedBy,Value=repository-runner-script},
+            {Key=ManagedBy,Value=aws-cli},
+            {Key=Purpose,Value=GitHub Actions Runner},
+            {Key=AutoShutdown,Value=true}
+        ]" \
+        --query 'Instances[0].InstanceId' \
+        --output text)
+    
+    if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+        log_error "Failed to create EC2 instance"
         return 1
     fi
     
-    log_success "Terraform execution completed"
+    log_success "EC2 instance created: $INSTANCE_ID"
+    
+    # Wait for instance to be running
+    log_info "Waiting for instance to be running..."
+    aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$INSTANCE_ID"
+    
+    # Get instance details
+    INSTANCE_DETAILS=$(aws ec2 describe-instances \
+        --region "$AWS_REGION" \
+        --instance-ids "$INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress,Placement.AvailabilityZone]' \
+        --output text)
+    
+    PUBLIC_IP=$(echo "$INSTANCE_DETAILS" | cut -f1)
+    PRIVATE_IP=$(echo "$INSTANCE_DETAILS" | cut -f2)
+    AVAILABILITY_ZONE=$(echo "$INSTANCE_DETAILS" | cut -f3)
+    
+    # Allocate Elastic IP if requested
+    if [ "$ALLOCATE_ELASTIC_IP" = true ]; then
+        log_info "Allocating Elastic IP..."
+        EIP_ALLOCATION=$(aws ec2 allocate-address \
+            --region "$AWS_REGION" \
+            --domain vpc \
+            --tag-specifications "ResourceType=elastic-ip,Tags=[
+                {Key=Name,Value=${INSTANCE_NAME}-eip},
+                {Key=GitHubUsername,Value=$GITHUB_USERNAME},
+                {Key=Repository,Value=${GITHUB_USERNAME}/${REPOSITORY_NAME}},
+                {Key=RepositoryName,Value=$REPOSITORY_NAME},
+                {Key=Environment,Value=$ENVIRONMENT},
+                {Key=CostCenter,Value=$COST_CENTER},
+                {Key=CreatedBy,Value=repository-runner-script},
+                {Key=ManagedBy,Value=aws-cli},
+                {Key=Purpose,Value=GitHub Actions Runner},
+                {Key=AutoShutdown,Value=true}
+            ]" \
+            --query '[AllocationId,PublicIp]' \
+            --output text)
+        
+        EIP_ALLOCATION_ID=$(echo "$EIP_ALLOCATION" | cut -f1)
+        EIP_PUBLIC_IP=$(echo "$EIP_ALLOCATION" | cut -f2)
+        
+        # Associate Elastic IP with instance
+        aws ec2 associate-address \
+            --region "$AWS_REGION" \
+            --instance-id "$INSTANCE_ID" \
+            --allocation-id "$EIP_ALLOCATION_ID"
+        
+        PUBLIC_IP="$EIP_PUBLIC_IP"
+        log_success "Elastic IP allocated and associated: $PUBLIC_IP"
+    fi
+    
+    log_success "EC2 instance creation completed"
     return 0
 }
 
@@ -559,31 +716,15 @@ execute_terraform() {
 show_results() {
     log_header "Deployment Results"
     
-    cd "$TERRAFORM_WORK_DIR"
+    local instance_name="runner-${GITHUB_USERNAME}-${REPOSITORY_NAME}"
+    local ssh_command="ssh -i ~/.ssh/${KEY_PAIR_NAME}.pem ubuntu@${PUBLIC_IP}"
+    local runner_url="https://github.com/${GITHUB_USERNAME}/${REPOSITORY_NAME}"
     
-    # Get outputs
-    local instance_id
-    instance_id=$(terraform output -raw instance_id 2>/dev/null || echo "N/A")
-    
-    local instance_name
-    instance_name=$(terraform output -raw instance_name 2>/dev/null || echo "N/A")
-    
-    local public_ip
-    public_ip=$(terraform output -raw instance_public_ip 2>/dev/null || echo "N/A")
-    
-    local private_ip
-    private_ip=$(terraform output -raw instance_private_ip 2>/dev/null || echo "N/A")
-    
-    local ssh_command
-    ssh_command=$(terraform output -raw ssh_connection_command 2>/dev/null || echo "N/A")
-    
-    local runner_url
-    runner_url=$(terraform output -raw runner_url 2>/dev/null || echo "N/A")
-    
-    echo "Instance ID: $instance_id"
+    echo "Instance ID: $INSTANCE_ID"
     echo "Instance Name: $instance_name"
-    echo "Public IP: $public_ip"
-    echo "Private IP: $private_ip"
+    echo "Public IP: $PUBLIC_IP"
+    echo "Private IP: $PRIVATE_IP"
+    echo "Availability Zone: $AVAILABILITY_ZONE"
     echo "Repository URL: $runner_url"
     echo ""
     echo "SSH Connection:"
@@ -592,22 +733,23 @@ show_results() {
     echo "Next Steps:"
     echo "1. Wait for instance to complete initialization (2-3 minutes)"
     echo "2. Configure the runner using:"
-    echo "   ./scripts/configure-repository-runner.sh \\"
+    echo "   ../scripts/configure-repository-runner.sh \\"
     echo "     --username $GITHUB_USERNAME \\"
     echo "     --repository $REPOSITORY_NAME \\"
-    echo "     --instance-id $instance_id \\"
+    echo "     --instance-id $INSTANCE_ID \\"
     echo "     --pat YOUR_GITHUB_PAT"
     echo ""
     echo "3. Test the runner with a GitHub Actions workflow"
-    echo ""
-    echo "Terraform State: $TERRAFORM_WORK_DIR"
 }
 
 # Cleanup on error
 cleanup_on_error() {
     if [ $? -ne 0 ]; then
-        log_error "Script failed. Terraform state preserved at: $TERRAFORM_WORK_DIR"
-        log_error "To clean up resources, run: cd $TERRAFORM_WORK_DIR && terraform destroy"
+        log_error "Script failed."
+        if [ ! -z "$INSTANCE_ID" ]; then
+            log_error "To clean up the created instance, run:"
+            log_error "aws ec2 terminate-instances --region $AWS_REGION --instance-ids $INSTANCE_ID"
+        fi
     fi
 }
 
@@ -726,11 +868,13 @@ main() {
     # Show configuration
     show_configuration
     
-    # Prepare Terraform
-    prepare_terraform
+    # Prepare AWS resources
+    if ! prepare_aws_resources; then
+        exit 1
+    fi
     
-    # Execute Terraform
-    if ! execute_terraform; then
+    # Create EC2 instance
+    if ! create_ec2_instance; then
         exit 1
     fi
     

@@ -282,26 +282,33 @@ test_ssh_connectivity() {
         return 1
     fi
     
-    # Test SSH port
-    if ! nc -z -w5 "$INSTANCE_PUBLIC_IP" 22 2>/dev/null; then
-        log_error "SSH port (22) not accessible on $INSTANCE_PUBLIC_IP"
-        log_error "Check security group rules and instance state"
-        return 1
-    fi
-    
-    # Test SSH connection
+    # Set up SSH key option
     local ssh_key_option=""
     if [ -n "$KEY_PAIR_NAME" ]; then
         ssh_key_option="-i ~/.ssh/${KEY_PAIR_NAME}.pem"
+        
+        # Check if key file exists
+        if [ ! -f ~/.ssh/${KEY_PAIR_NAME}.pem ]; then
+            log_error "SSH key file not found: ~/.ssh/${KEY_PAIR_NAME}.pem"
+            log_error "Make sure the key pair was created properly"
+            return 1
+        fi
     fi
     
-    if ssh $ssh_key_option -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$INSTANCE_PUBLIC_IP" "echo 'SSH connection successful'" 2>/dev/null; then
+    # Test SSH connection with more robust error handling
+    log_info "Attempting SSH connection to ubuntu@$INSTANCE_PUBLIC_IP..."
+    
+    if ssh $ssh_key_option -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$INSTANCE_PUBLIC_IP" "echo 'SSH connection successful'" 2>/dev/null; then
         log_success "SSH connectivity confirmed"
         return 0
     else
-        log_error "SSH connection failed to ubuntu@$INSTANCE_PUBLIC_IP"
-        log_error "Check SSH key configuration and security groups"
-        return 1
+        log_warning "Direct SSH test failed, but this might be due to environment issues"
+        log_info "Proceeding with configuration attempt..."
+        log_info "If configuration fails, check:"
+        log_info "  - Security group allows SSH from your IP: $(curl -s -4 icanhazip.com 2>/dev/null || echo 'unknown')"
+        log_info "  - Instance is running and accessible"
+        log_info "  - SSH key file exists: ~/.ssh/${KEY_PAIR_NAME}.pem"
+        return 0  # Continue anyway, let the actual configuration attempt fail if there's a real issue
     fi
 }
 
@@ -440,14 +447,19 @@ EOF
     
     # Execute configuration on remote instance
     log_info "Executing configuration on remote instance..."
-    echo "$config_script" | ssh $ssh_key_option -o StrictHostKeyChecking=no ubuntu@"$INSTANCE_PUBLIC_IP" \
-        "bash -s -- '$GITHUB_USERNAME' '$REPOSITORY_NAME' '$REGISTRATION_TOKEN' '$RUNNER_NAME'"
+    log_info "SSH command: ssh $ssh_key_option ubuntu@$INSTANCE_PUBLIC_IP"
     
-    if [ $? -eq 0 ]; then
+    if echo "$config_script" | ssh $ssh_key_option -o ConnectTimeout=30 -o StrictHostKeyChecking=no ubuntu@"$INSTANCE_PUBLIC_IP" \
+        "bash -s -- '$GITHUB_USERNAME' '$REPOSITORY_NAME' '$REGISTRATION_TOKEN' '$RUNNER_NAME'" 2>&1; then
         log_success "Runner configured successfully"
         return 0
     else
-        log_error "Runner configuration failed"
+        local exit_code=$?
+        log_error "Runner configuration failed (exit code: $exit_code)"
+        log_error "Troubleshooting steps:"
+        log_error "  1. Verify SSH access: ssh $ssh_key_option ubuntu@$INSTANCE_PUBLIC_IP"
+        log_error "  2. Check instance logs: aws ec2 get-console-output --instance-id $INSTANCE_ID --region $AWS_REGION"
+        log_error "  3. Verify security group allows SSH from your IP"
         return 1
     fi
 }

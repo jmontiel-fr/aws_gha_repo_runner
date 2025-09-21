@@ -12,7 +12,7 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 - **Cost Tracking**: Comprehensive tagging for precise cost allocation per repository
 - **Fast Startup**: Pre-configured instances with all tools installed, ready in ~2 minutes
 - **Scalable**: Easy provisioning of runners for multiple repositories
-- **Pre-installed Tools**: Docker, AWS CLI, Python, Java, Terraform, kubectl, Helm
+- **Pre-installed Tools**: Docker, AWS CLI, Python, Node.js, Java 17, Terraform, kubectl, Helm, Git
 - **Secure**: Restricted network access and encrypted storage
 - **Automated Management**: Complete lifecycle management via scripts and workflows
 
@@ -39,8 +39,9 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────┐ │  │
 │  │ │ Ubuntu 22.04 LTS    │ │  │ │ Ubuntu 22.04 LTS    │ │  │ │ Ubuntu 22.04│ │  │
 │  │ │ Docker, AWS CLI     │ │  │ │ Docker, AWS CLI     │ │  │ │ Docker, AWS │ │  │
-│  │ │ Python, Java        │ │  │ │ Python, Java        │ │  │ │ Python, Java│ │  │
-│  │ │ Terraform, kubectl  │ │  │ │ Terraform, kubectl  │ │  │ │ Terraform   │ │  │
+│  │ │ Python, Node.js     │ │  │ │ Python, Node.js     │ │  │ │ Python, Node│ │  │
+│  │ │ Java, Terraform     │ │  │ │ Java, Terraform     │ │  │ │ Java, Terraform │ │  │
+│  │ │ kubectl, Helm       │ │  │ │ kubectl, Helm       │ │  │ │ kubectl, Helm   │ │  │
 │  │ │ GitHub Actions      │ │  │ │ GitHub Actions      │ │  │ │ GitHub      │ │  │
 │  │ │ Runner              │ │  │ │ Runner              │ │  │ │ Actions     │ │  │
 │  │ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────┘ │  │
@@ -60,12 +61,53 @@ A scalable, repository-specific GitHub Actions runner infrastructure deployed on
 └─────────────────┘
 ```
 
+## 🚀 Quick Start
+
+**TL;DR - Get a runner up in 5 minutes:**
+
+1. **Clone and setup base infrastructure:**
+   ```bash
+   git clone <repo-url> && cd aws-gha-repo-runner
+   cd terraform && cp terraform.tfvars.example terraform.tfvars
+   # Edit terraform.tfvars with your IP (key pair auto-created)
+   terraform init && terraform apply
+   ```
+
+2. **Create EC2 instance for your repository:**
+   ```bash
+   ./scripts/create-repository-runner.sh \
+     --username YOUR_GITHUB_USERNAME \
+     --repository YOUR_REPO_NAME \
+     --key-pair YOUR_KEY_PAIR \
+     --region eu-west-1
+   ```
+
+3. **Register runner with GitHub:**
+   ```bash
+   ./scripts/configure-repository-runner.sh \
+     --username YOUR_GITHUB_USERNAME \
+     --repository YOUR_REPO_NAME \
+     --instance-id i-xxxxxxxxxxxxx \
+     --pat YOUR_GITHUB_PAT
+   ```
+
+4. **Add minimal secrets to your target repository:**
+   - Only 5 variables needed: AWS credentials, region, GitHub PAT, key pair
+   - Username and repository name are auto-derived from GitHub context
+
+5. **Use in workflows:**
+   ```yaml
+   jobs:
+     build:
+       runs-on: [self-hosted, gha_aws_runner]
+   ```
+
 ## 📋 Prerequisites
 
 ### AWS Requirements
 - AWS CLI configured with appropriate credentials
-- AWS account with permissions to create VPC, EC2, and Security Group resources
-- EC2 Key Pair for SSH access
+- AWS account with permissions to create VPC, EC2, Key Pairs, and Security Group resources
+- ✨ **Key pairs are auto-created** by the script (no manual setup needed)
 
 ### GitHub Requirements  
 - Personal GitHub account with repository admin permissions
@@ -104,15 +146,17 @@ key_pair_name        = "your-existing-key-pair"
 aws_region          = "us-east-1"
 ```
 
-### 3. Deploy Base Infrastructure (VPC, Networking)
+### 3. Deploy Base Infrastructure (One-time Setup)
 ```bash
 # Initialize Terraform
 terraform init
 
-# Deploy shared infrastructure
+# Deploy shared infrastructure (VPC, networking, security groups)
 terraform plan
 terraform apply
 ```
+
+**Important:** This creates the shared infrastructure (VPC, subnets, security groups) but **does not create any EC2 instances**. Each repository will get its own dedicated EC2 instance created in the next step.
 
 ### 4. Create Repository-Specific Runners
 
@@ -148,30 +192,114 @@ For each repository that needs a dedicated runner:
 - `runner-johndoe-api-service`
 - `runner-johndoe-mobile-app`
 
+**Architecture Clarification:**
+- **Base Terraform** (`terraform apply`) = Shared infrastructure (VPC, networking)
+- **Repository Scripts** (`create-repository-runner.sh`) = Individual EC2 instances per repository
+
 ### 5. Configure Repository Secrets
 
-For **each repository** that will use a dedicated runner, add these secrets (Settings → Secrets and variables → Actions):
+⚠️ **IMPORTANT**: These secrets and variables must be configured in **each individual repository** where you want to use the self-hosted runner, **NOT** in this infrastructure repository.
 
-| Secret Name             | Description                                         | Example                                    |
-| ----------------------- | --------------------------------------------------- | ------------------------------------------ |
-| `AWS_ACCESS_KEY_ID`     | AWS access key for EC2 management                   | `AKIAIOSFODNN7EXAMPLE`                     |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret access key                               | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
-| `AWS_REGION`            | AWS region where infrastructure is deployed         | `us-east-1`                                |
-| `GH_PAT`                | GitHub Personal Access Token with `repo` scope only | `ghp_xxxxxxxxxxxxxxxxxxxx`                 |
-| `GITHUB_USERNAME`       | Your GitHub username                                | `johndoe`                                  |
-| `REPOSITORY_NAME`       | This repository's name                              | `my-web-app`                               |
-| `RUNNER_NAME`           | GitHub runner name                                  | `gha_aws_runner`                           |
-| `KEY_PAIR_NAME`         | AWS key pair for SSH access                        | `my-runner-key`                            |
-| `INSTANCE_TYPE`         | EC2 instance type (optional)                       | `t3.micro`                                 |
+For **each target repository** that will use a dedicated runner, add these variables (Settings → Secrets and variables → Actions):
+
+## Required Variables (Minimum Setup)
+
+| Variable Name           | Type        | Description                                         | Example                                    |
+| ----------------------- | ----------- | --------------------------------------------------- | ------------------------------------------ |
+| `AWS_ACCESS_KEY_ID`     | **Secret**  | AWS access key for EC2 management                   | `AKIAIOSFODNN7EXAMPLE`                     |
+| `AWS_SECRET_ACCESS_KEY` | **Secret**  | AWS secret access key                               | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
+| `AWS_REGION`            | Variable    | AWS region where infrastructure is deployed         | `us-east-1`                                |
+| `GH_PAT`                | **Secret**  | GitHub Personal Access Token with `repo` scope only | `ghp_xxxxxxxxxxxxxxxxxxxx`                 |
+| `KEY_PAIR_NAME`         | Variable    | AWS EC2 Key Pair name (must exist in your AWS region) | `gha-runner-key-pair`                      |
+
+## Optional Variables (Auto-derived if not set)
+
+| Variable Name           | Type        | Description                                         | Auto-derived Value                         |
+| ----------------------- | ----------- | --------------------------------------------------- | ------------------------------------------ |
+| `GH_USERNAME`           | Variable    | Your GitHub username                                | `${{ github.repository_owner }}`           |
+| `REPOSITORY_NAME`       | Variable    | This repository's name                              | `${{ github.event.repository.name }}`      |
+| `RUNNER_NAME`           | Variable    | GitHub runner name                                  | `runner-${{ github.repository_owner }}-${{ github.event.repository.name }}` |
+| `INSTANCE_TYPE`         | Variable    | EC2 instance type                                   | `t3.micro` (default)                       |
+
+## Why So Many Variables? 🤔
+
+**The Reality**: You only need **5 required variables** per repository. The rest can be auto-derived!
+
+**Why Each Variable is Needed:**
+- **AWS Credentials** (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`): To manage EC2 instances
+- **AWS Region** (`AWS_REGION`): To know which region to create/manage instances
+- **GitHub PAT** (`GH_PAT`): To register/unregister runners with GitHub
+- **Key Pair** (`KEY_PAIR_NAME`): To enable SSH access to instances
+
+**Auto-Derived Variables** (GitHub provides these automatically):
+- **Username**: `${{ github.repository_owner }}` (e.g., "johndoe")
+- **Repository**: `${{ github.event.repository.name }}` (e.g., "my-web-app")
+- **Runner Name**: Automatically constructed as `runner-{username}-{repository}`
+
+**Minimal Setup**: Only set the 5 required variables, let GitHub auto-derive the rest!
+
+**Variable Types:**
+- **Secrets** (🔒): Sensitive data that is encrypted and masked in logs (AWS keys, GitHub PAT)
+- **Variables** (📝): Non-sensitive configuration data that can be visible in logs (regions, key pairs)
+
+**How to Add Variables:**
+1. Go to your repository → **Settings** → **Secrets and variables** → **Actions**
+2. **For Secrets**: Click **"New repository secret"** tab
+3. **For Variables**: Click **"Variables"** tab → **"New repository variable"**
 
 **Repository-Specific Configuration:**
-- Each repository needs its own set of secrets
-- The `REPOSITORY_NAME` secret should match the actual repository name
-- Instance will be automatically named: `runner-{GITHUB_USERNAME}-{REPOSITORY_NAME}`
+- **Each target repository** needs its own complete set of variables and secrets
+- The `REPOSITORY_NAME` variable should match the actual repository name where you're adding these secrets
+- The `RUNNER_NAME` should follow the pattern: `runner-{GH_USERNAME}-{REPOSITORY_NAME}` (same as instance name)
+- Instance will be automatically named: `runner-{GH_USERNAME}-{REPOSITORY_NAME}`
 
-### 6. Configure Repository Runner
+**Minimal Setup Example:**
+```
+Repository: johndoe/my-web-app
+├── Settings → Secrets and variables → Actions
+    ├── Secrets: 
+    │   ├── AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+    │   ├── AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    │   └── GH_PAT=ghp_xxxxxxxxxxxxxxxxxxxx
+    └── Variables: 
+        ├── AWS_REGION=us-east-1
+        └── KEY_PAIR_NAME=gha-runner-key-pair
+        
+    # Auto-derived (no need to set):
+    # - GH_USERNAME = johndoe (from github.repository_owner)
+    # - REPOSITORY_NAME = my-web-app (from github.event.repository.name)
+    # - RUNNER_NAME = runner-johndoe-my-web-app (auto-constructed)
 
-After creating the EC2 instance, configure it for your repository:
+Repository: johndoe/my-api-service  
+├── Settings → Secrets and variables → Actions
+    ├── Secrets: (same 3 secrets as above)
+    └── Variables: (same 2 variables as above)
+    
+    # Auto-derived (different per repo):
+    # - REPOSITORY_NAME = my-api-service
+    # - RUNNER_NAME = runner-johndoe-my-api-service
+```
+
+**Result**: Only **5 variables** per repository instead of 9! 🎉
+
+**Key Points:**
+- 🏗️ **Infrastructure repo** (`aws-gha-repo-runner`): Only needs `terraform.tfvars` configuration
+- 🎯 **Target repositories**: Each needs only **5 minimal variables** (not 9!)
+- 🔄 **Same AWS credentials**: Can be reused across all target repositories
+- 🤖 **Auto-derived values**: Username and repository name come from GitHub context
+- 🔑 **KEY_PAIR_NAME**: Must be an existing EC2 Key Pair in your AWS region (created beforehand)
+- ✨ **Simplified setup**: Less configuration, fewer errors, easier maintenance
+
+**About KEY_PAIR_NAME:**
+- **Auto-created**: If the key pair doesn't exist, the script will create it automatically
+- **Saved locally**: Private key is automatically saved to `~/.ssh/{KEY_PAIR_NAME}.pem`
+- **Same key pair** can be used across all repositories for consistency
+- **Proper permissions**: Script automatically sets `chmod 400` on the private key file
+- **No manual setup needed**: Just specify the name, script handles the rest!
+
+### 6. Register Runner with GitHub
+
+After creating the EC2 instance, you need to register it as a GitHub Actions runner for your repository:
 
 ```bash
 # Configure the runner for your repository
@@ -184,11 +312,63 @@ After creating the EC2 instance, configure it for your repository:
 # The runner will be registered as: runner-johndoe-my-web-app
 ```
 
+**What this step does:**
+1. **Connects to your EC2 instance** via SSH
+2. **Downloads GitHub Actions runner software** to the instance
+3. **Generates a registration token** from GitHub API using your PAT
+4. **Registers the runner** with your specific repository
+5. **Configures the runner service** to start automatically
+6. **Labels the runner** with `self-hosted` and `gha_aws_runner` tags
+
+**After successful registration:**
+- Your runner will appear in GitHub → Repository → Settings → Actions → Runners
+- The runner status will show as "Idle" and ready to accept jobs
+- You can now use `runs-on: [self-hosted, gha_aws_runner]` in your workflows
+
+### 7. Verify Runner Registration
+
+Check that your runner is properly registered:
+
+**In GitHub Web Interface:**
+1. Go to your repository on GitHub
+2. Navigate to **Settings** → **Actions** → **Runners**
+3. You should see your runner listed as: `runner-{username}-{repository}`
+4. Status should show as **"Idle"** (green dot)
+
+**Via Command Line:**
+```bash
+# Check runner status via GitHub API
+curl -H "Authorization: token YOUR_GITHUB_PAT" \
+  "https://api.github.com/repos/johndoe/my-web-app/actions/runners"
+
+# SSH to instance and check runner service
+ssh -i ~/.ssh/gha-runner-key-pair.pem ubuntu@54.229.40.93
+sudo systemctl status actions.runner.*
+```
+
+**Test with a Simple Workflow:**
+Create `.github/workflows/test-runner.yml`:
+```yaml
+name: Test Self-Hosted Runner
+on: workflow_dispatch
+
+jobs:
+  test:
+    runs-on: [self-hosted, gha_aws_runner]
+    steps:
+      - name: Test runner
+        run: |
+          echo "Running on: $(hostname)"
+          echo "Instance: runner-${{ github.repository_owner }}-${{ github.event.repository.name }}"
+          docker --version
+          aws --version
+```
+
 ## 🎯 Usage
 
 ### Automated Repository Workflow (Recommended)
 
-Use the provided example workflow in `.github/workflows/runner-demo.yml`. This workflow can provision a new instance if needed and manages the dedicated repository runner:
+Use the provided example workflow in `.github/workflows/runner-demo-minimal.yml`. This workflow uses **minimal variables** and auto-derives repository information from GitHub context:
 
 ```yaml
 name: Repository Self-Hosted Runner Demo
@@ -209,7 +389,7 @@ jobs:
     steps:
       - name: Provision EC2 instance for repository
         run: |
-          # Creates instance: runner-${{ secrets.GITHUB_USERNAME }}-${{ secrets.REPOSITORY_NAME }}
+          # Creates instance: runner-${{ github.repository_owner }}-${{ github.event.repository.name }}
           
   start-runner:
     runs-on: ubuntu-latest
@@ -228,9 +408,15 @@ jobs:
       - name: Your workflow steps here
         run: |
           echo "Running on dedicated AWS runner for ${{ github.repository }}"
-          echo "Instance: runner-${{ secrets.GITHUB_USERNAME }}-${{ secrets.REPOSITORY_NAME }}"
+          echo "Instance: runner-${{ github.repository_owner }}-${{ github.event.repository.name }}"
           docker --version
           aws --version
+
+# ✨ Benefits of Minimal Variables Approach:
+# - Only 5 secrets/variables to configure per repository
+# - Username and repository name auto-derived from GitHub context
+# - Less configuration, fewer errors
+# - Consistent naming across all repositories
           
   stop-runner:
     needs: [start-runner, your-job]
@@ -301,9 +487,9 @@ jobs:
 
 ```bash
 # Create runners for multiple repositories
-./scripts/create-repository-runner.sh --username johndoe --repository web-app --key-pair my-key
-./scripts/create-repository-runner.sh --username johndoe --repository api-service --key-pair my-key  
-./scripts/create-repository-runner.sh --username johndoe --repository mobile-app --key-pair my-key
+./scripts/create-repository-runner.sh --username johndoe --repository web-app --key-pair gha-runner-key-pair
+./scripts/create-repository-runner.sh --username johndoe --repository api-service --key-pair gha-runner-key-pair  
+./scripts/create-repository-runner.sh --username johndoe --repository mobile-app --key-pair gha-runner-key-pair
 
 # Results in:
 # - runner-johndoe-web-app
@@ -320,59 +506,9 @@ jobs:
 - **Security**: No shared state or credentials between repositories
 - **Scalability**: Easy to add/remove runners for different projects
 
-## 🏗️ Repository Runner Management
+## 🏗️ Managing Your Runners
 
-### Creating Repository Runners
-
-```bash
-# Create runner for web application
-./scripts/create-repository-runner.sh \
-  --username johndoe \
-  --repository my-web-app \
-  --key-pair my-runner-key \
-  --instance-type t3.micro
-
-# Create runner for API service with enhanced features
-./scripts/create-repository-runner.sh \
-  --username johndoe \
-  --repository api-service \
-  --key-pair my-runner-key \
-  --instance-type t3.small \
-  --environment prod \
-  --enable-monitoring \
-  --enable-logs \
-  --allocate-eip
-
-# Create runner for mobile app with custom networking
-./scripts/create-repository-runner.sh \
-  --username johndoe \
-  --repository mobile-app \
-  --key-pair my-runner-key \
-  --vpc-id vpc-12345678 \
-  --subnet-id subnet-12345678 \
-  --ssh-cidr "10.0.0.0/8"
-```
-
-### Configuring Repository Runners
-
-```bash
-# Configure runner for repository
-./scripts/configure-repository-runner.sh \
-  --username johndoe \
-  --repository my-web-app \
-  --instance-id i-1234567890abcdef0 \
-  --pat ghp_xxxxxxxxxxxxxxxxxxxx
-
-# Configure with custom runner name
-./scripts/configure-repository-runner.sh \
-  --username johndoe \
-  --repository api-service \
-  --instance-id i-0987654321fedcba0 \
-  --pat ghp_xxxxxxxxxxxxxxxxxxxx \
-  --runner-name custom-api-runner
-```
-
-### Managing Multiple Repository Runners
+### List All Repository Runners
 
 ```bash
 # List all repository runners
@@ -451,69 +587,7 @@ Total: ~$17.70/month for 3 dedicated runners
 - **Spot Instances**: Consider spot instances for non-critical development work
 - **Right-Sizing**: Monitor usage and adjust instance types per repository needs
 
-## 🔧 Configuration
-
-### Repository Runner Configuration
-
-Each repository runner can be configured independently:
-
-```bash
-# Basic repository runner
-./scripts/create-repository-runner.sh \
-  --username johndoe \
-  --repository my-app \
-  --key-pair my-key
-
-# Production repository runner with monitoring
-./scripts/create-repository-runner.sh \
-  --username johndoe \
-  --repository prod-api \
-  --key-pair my-key \
-  --instance-type t3.medium \
-  --environment prod \
-  --enable-monitoring \
-  --enable-logs \
-  --allocate-eip
-
-# Development repository runner with custom VPC
-./scripts/create-repository-runner.sh \
-  --username johndoe \
-  --repository dev-app \
-  --key-pair my-key \
-  --vpc-id vpc-12345678 \
-  --subnet-id subnet-12345678 \
-  --ssh-cidr "10.0.0.0/8"
-```
-
-### Terraform Module Configuration
-
-The repository runner module supports extensive configuration:
-
-```hcl
-module "my_app_runner" {
-  source = "./modules/repository-runner"
-  
-  # Required
-  github_username = "johndoe"
-  repository_name = "my-app"
-  key_pair_name   = "my-runner-key"
-  
-  # Instance configuration
-  instance_type = "t3.small"
-  environment   = "prod"
-  cost_center   = "engineering"
-  
-  # Optional features
-  allocate_elastic_ip      = true
-  enable_detailed_monitoring = true
-  enable_cloudwatch_logs   = true
-  create_iam_role         = true
-  enable_auto_recovery    = true
-  
-  # Additional tools
-  additional_tools = ["postgresql-client", "redis-tools"]
-}
-```
+## 🔧 Advanced Configuration
 
 ### Network Security (Per Instance)
 - **SSH Access**: Configurable CIDR blocks (default: your IP only)
@@ -544,7 +618,8 @@ tags = {
 Before troubleshooting issues, run the comprehensive validation script:
 
 ```bash
-# Set required environment variables
+# Set required environment variables for CLI troubleshooting
+# Note: These are shell variables, not GitHub Actions secrets
 export GITHUB_USERNAME="your-username"
 export GITHUB_REPOSITORY="your-repository"
 export GH_PAT="your-github-pat"

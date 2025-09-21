@@ -15,7 +15,7 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a /var/log/runner-setup.log
 }
 
-log "Starting GitHub Actions runner setup for ${GITHUB_USERNAME}/${REPOSITORY_NAME}"
+log "Starting GitHub Actions runner setup for $GITHUB_USERNAME/$REPOSITORY_NAME"
 
 # Update system packages
 log "Updating system packages..."
@@ -61,7 +61,7 @@ usermod -aG docker ubuntu
 # Install Docker Compose (standalone)
 log "Installing Docker Compose..."
 DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | jq -r '.tag_name')
-curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+curl -L "https://github.com/docker/compose/releases/download/$${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
 
 # Install AWS CLI v2
@@ -100,9 +100,9 @@ apt-get install -y dotnet-sdk-6.0 dotnet-sdk-7.0
 # Install Go
 log "Installing Go..."
 GO_VERSION=$(curl -s https://api.github.com/repos/golang/go/releases/latest | jq -r '.tag_name')
-wget "https://golang.org/dl/${GO_VERSION}.linux-amd64.tar.gz"
-rm -rf /usr/local/go && tar -C /usr/local -xzf "${GO_VERSION}.linux-amd64.tar.gz"
-rm "${GO_VERSION}.linux-amd64.tar.gz"
+wget "https://golang.org/dl/$${GO_VERSION}.linux-amd64.tar.gz"
+rm -rf /usr/local/go && tar -C /usr/local -xzf "$${GO_VERSION}.linux-amd64.tar.gz"
+rm "$${GO_VERSION}.linux-amd64.tar.gz"
 echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
 
 # Install Terraform
@@ -154,22 +154,22 @@ fi
 log "Installing GitHub Actions runner version: $RUNNER_VERSION"
 
 # Download runner
-curl -o actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz -L \
-    "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+curl -o actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz -L \
+    "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
 
 # Verify checksum (optional but recommended)
-curl -o actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz.sha256 -L \
-    "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz.sha256"
+curl -o actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz.sha256 -L \
+    "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz.sha256"
 
-if sha256sum -c actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz.sha256; then
+if sha256sum -c actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz.sha256; then
     log "Runner checksum verification passed"
 else
     log "Warning: Runner checksum verification failed"
 fi
 
 # Extract runner
-tar xzf ./actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz
-rm actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz*
+tar xzf ./actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz
+rm actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz*
 
 # Set ownership
 chown -R ubuntu:ubuntu /home/ubuntu/actions-runner
@@ -207,10 +207,10 @@ sudo ./svc.sh uninstall 2>/dev/null || true
 
 # Configure runner
 ./config.sh \
-    --url "https://github.com/${GITHUB_USERNAME}/${REPOSITORY_NAME}" \
+    --url "https://github.com/$${GITHUB_USERNAME}/$${REPOSITORY_NAME}" \
     --token "$GITHUB_TOKEN" \
     --name "$RUNNER_NAME" \
-    --labels "self-hosted,gha_aws_runner,${GITHUB_USERNAME}-${REPOSITORY_NAME}" \
+    --labels "self-hosted,gha_aws_runner,$${GITHUB_USERNAME}-$${REPOSITORY_NAME}" \
     --work "_work" \
     --unattended \
     --replace
